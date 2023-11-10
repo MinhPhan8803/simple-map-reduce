@@ -1,0 +1,33 @@
+syntax = "proto3";
+package member_list;
+
+message FailureDetection {
+    oneof type {
+        MemberList members = 1;
+        Coordinator coord = 2;
+        Election elect = 3;
+    }
+}
+
+message MemberList {
+    string sender = 1;
+    repeated Member machines = 2;
+}
+
+message Member {
+    string id = 1;
+    uint32 heartbeat = 2;
+    string time = 3;
+}
+
+message Coordinator {
+    string leader_ip = 1;
+}
+
+message Election {
+    
+}
+
+message Ok {
+
+}

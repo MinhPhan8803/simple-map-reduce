@@ -1,0 +1,445 @@
+use crate::client::client_get_helper;
+use crate::message_types::{sdfs_command::Type, SdfsCommand};
+use crate::message_types::{
+    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderStoreRes, LsRes, MultiRead, MultiWrite,
+    PutReq,
+};
+use futures::{stream, StreamExt};
+use prost::{length_delimiter_len, Message};
+use std::io;
+use std::{fmt, sync::Arc};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::{fs, sync::Mutex};
+use tracing::{error, info, instrument, warn};
+
+#[derive(Debug, Clone)]
+pub struct LocalFileList {
+    list: Vec<String>,
+}
+
+impl LocalFileList {
+    pub fn new() -> LocalFileList {
+        LocalFileList { list: Vec::new() }
+    }
+    pub fn list_mut(&mut self) -> &mut Vec<String> {
+        &mut self.list
+    }
+    pub fn list(&self) -> &[String] {
+        &self.list
+    }
+}
+
+impl fmt::Display for LocalFileList {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for file_name in self.list() {
+            writeln!(f, "{}", file_name)?;
+        }
+        write!(f, "")
+    }
+}
+
+async fn handle_put(
+    put_req: PutReq,
+    mut stream: TcpStream,
+    local_file_list: Arc<Mutex<LocalFileList>>,
+) {
+    info!("Handling client PUT request");
+    let ack_buffer = Ack {
+        message: "File PUT acknowledged".to_string(),
+    }
+    .encode_to_vec();
+    let _ = stream.write_all(&ack_buffer).await;
+
+    let path = format!("/home/sdfs/{}", put_req.file_name);
+    let Ok(mut file) = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .await
+    else {
+        error!("Unable to open file");
+        return;
+    };
+
+    let mut res_buffer: Vec<u8> = Vec::new();
+    let mut remaining_buffer = [0; 5120];
+
+    while let Ok(n) = stream.read(&mut remaining_buffer).await {
+        //println!("Read data from client with size {}", n);
+        if n == 0 {
+            break;
+        }
+
+        let (left, _) = remaining_buffer.split_at_mut(n);
+        res_buffer.extend_from_slice(left);
+        remaining_buffer.fill(0);
+
+        while let Ok(res_data) = GetData::decode_length_delimited(res_buffer.as_slice()) {
+            //println!("Decoded data from client, seeking file to: {}", res_data.offset);
+            let raw_length = res_data.encoded_len();
+            let delim_length = length_delimiter_len(raw_length);
+            res_buffer = res_buffer.split_off(raw_length + delim_length);
+            if let Err(e) = file.seek(io::SeekFrom::Start(res_data.offset)).await {
+                error!("Unable to seek file {}, aborting", e);
+                return;
+            };
+            // Write the fetched data to a local file
+            if let Err(e) = file.write_all(&res_data.data).await {
+                error!(
+                    "Unable to write to file at offset {} with error {}",
+                    res_data.offset, e
+                );
+                break;
+            }
+        }
+    }
+    if let Err(e) = file.sync_all().await {
+        error!("Unable to sync file {e}");
+    } else {
+        let mut file_list = local_file_list.lock().await;
+        file_list.list_mut().push(put_req.file_name);
+        info!("Server handled client PUT successfully");
+    }
+}
+
+async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) {
+    info!("Handling leader PUT request at server");
+    let get_req = GetReq {
+        file_name: leader_put_req.file_name.clone(),
+    };
+    info!("Connecting to the other server {}", leader_put_req.machine);
+    //Add server port 56552 to the end of the machine string
+    let machine = leader_put_req.machine + ":56552";
+    info!("Connecting to the other server from server {}", machine);
+    let Ok(mut inter_server_stream) = TcpStream::connect(machine).await else {
+        warn!("Unable to connect to the other server");
+        return;
+    };
+
+    let req_buf = SdfsCommand {
+        r#type: Some(Type::PutReq(PutReq {
+            file_name: leader_put_req.file_name,
+        })),
+    }
+    .encode_to_vec();
+    let _ = inter_server_stream.write_all(&req_buf).await;
+    let mut res_buf = [0; 1024];
+    let Ok(n) = inter_server_stream.read(&mut res_buf).await else {
+        warn!("Failed to read ACK from the other server");
+        return;
+    };
+    if let Err(e) = Ack::decode(&res_buf[..n]) {
+        warn!("Unable to decode ACK message: {}", e);
+        return;
+    }
+
+    handle_get(get_req, inter_server_stream).await;
+
+    info!("Server handled leader PUT successfully");
+    let leader_ack = Ack {
+        message: "Server PUT successful".to_string(),
+    }
+    .encode_to_vec();
+    let _ = stream.write_all(&leader_ack).await;
+    let _ = stream.shutdown().await;
+}
+
+#[instrument(name = "Server Get", level = "trace")]
+async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
+    info!("Handling GET request");
+    let path = format!("/home/sdfs/{}", get_req.file_name);
+    let Ok(mut file) = fs::File::open(path).await else {
+        warn!("Unable to open file {}", get_req.file_name);
+        return;
+    };
+    let mut file_buf = [0; 4096];
+    let mut file_offset = 0;
+    let mut mesg = GetData {
+        machine: "".to_string(),
+        file_name: get_req.file_name,
+        offset: 0,
+        data: Vec::new(),
+    };
+
+    info!("Server beginning send");
+    while let Ok(read_size) = file.read(&mut file_buf).await {
+        if read_size == 0 {
+            break;
+        }
+        //println!("Server sending with size {}", read_size);
+        let send_buffer = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
+        //println!("Server send buffer: {:?}", &send_buffer);
+        mesg.offset = file_offset as u64;
+        mesg.data = send_buffer;
+        let mesg_buffer = mesg.encode_length_delimited_to_vec();
+        //println!("Server mesg buffer: {:?}", mesg_buffer);
+        if let Err(e) = stream.write_all(&mesg_buffer).await {
+            warn!("Unable to write to client {}", e);
+        }
+        //println!("Server finished sending");
+        file_offset += read_size;
+        file_buf.fill(0);
+    }
+    info!("Server handled GET request successfully");
+    let _ = stream.shutdown().await;
+}
+
+#[instrument(name = "Server Delete", level = "trace")]
+async fn handle_del(
+    del_req: Delete,
+    mut stream: TcpStream,
+    local_file_list: Arc<Mutex<LocalFileList>>,
+) {
+    let path = format!("/home/sdfs/{}", del_req.file_name);
+    let _ = fs::remove_file(path).await;
+    let mut file_list = local_file_list.lock().await;
+    file_list
+        .list_mut()
+        .retain(|elem| *elem != del_req.file_name);
+    let ack_buffer = Ack {
+        message: "File DELETE successful".to_string(),
+    }
+    .encode_to_vec();
+    info!("Server deleted file {}", del_req.file_name);
+    let _ = stream.write_all(&ack_buffer).await;
+    let _ = stream.shutdown().await;
+}
+
+#[instrument(name = "Server Store", level = "trace")]
+async fn handle_leader_store(mut stream: TcpStream, local_file_list: Arc<Mutex<LocalFileList>>) {
+    info!("Handling leader store request at server");
+    let resp = LeaderStoreRes {
+        files: local_file_list.lock().await.list().to_vec(),
+    }
+    .encode_to_vec();
+    let _ = stream.write_all(&resp).await;
+    let _ = stream.shutdown().await;
+}
+
+#[instrument(name = "Server Multi-Read", level = "trace")]
+async fn handle_multi_read(mut client_stream: TcpStream, multi_read_req: MultiRead) {
+    let leader_address = multi_read_req.leader_ip + ":56553";
+    let Ok(mut leader_stream) = TcpStream::connect(leader_address).await else {
+        error!("Unable to contact leader");
+        return;
+    };
+
+    let req_buffer = SdfsCommand {
+        r#type: Some(Type::GetReq(GetReq {
+            file_name: multi_read_req.sdfs_file_name.clone(),
+        })),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&req_buffer).await;
+
+    let mut res_buffer = [0; 1024];
+    let Ok(n) = leader_stream.read(&mut res_buffer).await else {
+        error!("No leader response to request: ");
+        return;
+    };
+    let Ok(machine_list) = LsRes::decode(&res_buffer[..n]) else {
+        error!("Unable to decode leader response, aborting");
+        return;
+    };
+
+    if !machine_list.machines.is_empty() {
+        let _ = client_get_helper(
+            machine_list.machines,
+            &multi_read_req.sdfs_file_name,
+            &multi_read_req.local_file_name,
+        )
+        .await;
+    }
+
+    let leader_ack_buffer = Ack {
+        message: "Received list from server".to_string(),
+    }
+    .encode_to_vec();
+    let client_ack_buffer = Ack {
+        message: "Successfully read from server".to_string(),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&leader_ack_buffer).await;
+    let _ = leader_stream.shutdown().await;
+    let _ = client_stream.write_all(&client_ack_buffer).await;
+    let _ = client_stream.shutdown().await;
+}
+
+#[instrument(name = "Server MultiWrite", level = "trace")]
+async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: MultiWrite) {
+    let leader_address = multi_write_req.leader_ip + ":56553";
+    let Ok(mut leader_stream) = TcpStream::connect(leader_address).await else {
+        error!("Unable to contact leader");
+        return;
+    };
+
+    let req_buffer = SdfsCommand {
+        r#type: Some(Type::PutReq(PutReq {
+            file_name: multi_write_req.sdfs_file_name.clone(),
+        })),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&req_buffer).await;
+
+    let mut res_buffer = [0; 1024];
+    let Ok(n) = leader_stream.read(&mut res_buffer).await else {
+        error!("No leader response to request: ");
+        return;
+    };
+    let Ok(machine_list) = LsRes::decode(&res_buffer[..n]) else {
+        error!("Unable to decode leader response, aborting");
+        return;
+    };
+
+    stream::iter(machine_list.machines)
+        .for_each_concurrent(None, |machine| async {
+            let machine_address = machine + ":56552";
+            let Ok(mut inter_server_stream) = TcpStream::connect(machine_address).await else {
+                warn!("Unable to connect to the other server");
+                return;
+            };
+
+            let get_req = GetReq {
+                file_name: multi_write_req.local_file_name.clone(),
+            };
+
+            let req_buf = SdfsCommand {
+                r#type: Some(Type::PutReq(PutReq {
+                    file_name: multi_write_req.sdfs_file_name.clone(),
+                })),
+            }
+            .encode_to_vec();
+
+            let _ = inter_server_stream.write_all(&req_buf).await;
+            let mut res_buf = [0; 1024];
+            let Ok(n) = inter_server_stream.read(&mut res_buf).await else {
+                warn!("Failed to read ACK from the other server");
+                return;
+            };
+            if let Err(e) = Ack::decode(&res_buf[..n]) {
+                warn!("Unable to decode ACK message: {}", e);
+                return;
+            }
+
+            handle_get(get_req, inter_server_stream).await;
+        })
+        .await;
+
+    let leader_ack_buffer: Vec<u8> = Ack {
+        message: "Server PUT successful".to_string(),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&leader_ack_buffer).await;
+    let _ = leader_stream.shutdown().await;
+
+    let client_ack_buffer = Ack {
+        message: "Successfully read from server".to_string(),
+    }
+    .encode_to_vec();
+    let _ = client_stream.write_all(&client_ack_buffer).await;
+    let _ = client_stream.shutdown().await;
+}
+
+#[instrument(name = "Server startup and listener", level = "trace")]
+pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
+    let raw_machine_name = hostname::get().unwrap().into_string().unwrap();
+    let addr = raw_machine_name + ":56552"; // Ensure this is the correct IP and port.
+    let Ok(listener) = TcpListener::bind(&addr).await else {
+        println!("Failed to bind server, aborting");
+        return;
+    };
+    info!("Server listening on port 56552");
+
+    let mut buffer = [0; 1024];
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            error!("Unable to accept TCP socket connection");
+            continue;
+        };
+        info!("Accepted connection from client");
+
+        match stream.read(&mut buffer).await {
+            Ok(size) => {
+                info!("Received data from client with size {}", size);
+                let actual_buffer = &buffer[..size];
+                //println!("Data: {:?}", actual_buffer);
+
+                let command: SdfsCommand = match SdfsCommand::decode(actual_buffer) {
+                    Ok(cmd) => cmd,
+                    Err(e) => {
+                        warn!("Failed to decode command: {}", e);
+                        return;
+                    }
+                };
+
+                info!("Received command at server: {:?}", command);
+
+                match command.r#type {
+                    Some(Type::PutReq(put_req)) => {
+                        // ... [snipped: unchanged PutData handling code]
+                        info!("Received PutData command from client");
+                        let file_list = local_file_list.clone();
+                        tokio::spawn(async move {
+                            handle_put(put_req, stream, file_list).await;
+                        });
+                    }
+                    Some(Type::GetReq(get_req)) => {
+                        info!("Received GetData command from client");
+                        // Better error handling instead of unwrap()
+                        // In your server's GetData and PutData handling, construct the file path like this:
+                        tokio::spawn(async move {
+                            handle_get(get_req, stream).await;
+                        });
+                    }
+                    Some(Type::Del(del_req)) => {
+                        info!("Received Delete command at server");
+                        let file_list = local_file_list.clone();
+                        tokio::spawn(async move {
+                            handle_del(del_req, stream, file_list).await;
+                        });
+                    }
+                    Some(Type::LeaderPutReq(leader_put_req)) => {
+                        info!("Received Put command from the leader");
+                        tokio::spawn(async move {
+                            handle_leader_put(leader_put_req, stream).await;
+                        });
+                    }
+                    Some(Type::LeaderStoreReq(_)) => {
+                        info!("Received Store request from the leader");
+                        let file_list = local_file_list.clone();
+                        tokio::spawn(async move {
+                            handle_leader_store(stream, file_list).await;
+                        });
+                    }
+                    Some(Type::MultiRead(multi_read_req)) => {
+                        info!("Received MultiRead command from client");
+                        tokio::spawn(async move {
+                            handle_multi_read(stream, multi_read_req).await;
+                        });
+                    }
+                    Some(Type::MultiWrite(multi_write_req)) => {
+                        info!("Received MultiWrite command from client");
+                        tokio::spawn(async move {
+                            handle_multi_write(stream, multi_write_req).await;
+                        });
+                    }
+                    _ => {
+                        // TODO: Add delete command
+                        // Other types of commands are not handled here
+                        tokio::spawn(async move {
+                            let fail_buffer = Fail {
+                                message: "Invalid command".to_string(),
+                            }
+                            .encode_to_vec();
+                            let _ = stream.write_all(&fail_buffer).await;
+                        });
+                    }
+                }
+            }
+            Err(e) => warn!("Failed to read from socket: {}", e),
+        }
+        buffer.fill(0);
+    }
+}

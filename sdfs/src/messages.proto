@@ -1,0 +1,88 @@
+syntax = "proto3";
+package message_types;
+
+message SDFSCommand {
+    oneof type {
+        PutReq put_req = 1;
+        PutData put_data = 2;
+        GetReq get_req = 3;
+        GetData get_data = 4;
+        Delete del = 5;
+        LsReq ls_req = 6;
+        LsRes ls_res = 7;
+        Ack ack = 8;
+        Fail fail = 9;
+        LeaderPutReq leader_put_req = 10;
+        LeaderStoreReq leader_store_req = 11;
+        LeaderStoreRes leader_store_res = 12;
+        MultiRead multi_read = 13;
+        MultiWrite multi_write = 14;
+    }
+}
+
+message PutReq {
+    string file_name = 1;
+}
+
+message PutData {
+    string machine = 1;
+    string file_name = 2;
+    uint64 offset = 3;
+    bytes data = 4;
+}
+
+message LeaderPutReq {
+    string machine = 1;
+    string file_name = 2;
+}
+
+message GetReq {
+    string file_name = 1;
+}
+
+message GetData {
+    string machine = 1;
+    string file_name = 2;
+    uint64 offset = 3;
+    bytes data = 4;
+}
+
+message Delete {
+    string file_name = 1;
+}
+
+message LsReq {
+    string file_name = 1;
+}
+
+message LsRes {
+    repeated string machines = 1;
+}
+
+message Ack {
+    string message = 1;
+}
+
+message Fail {
+    string message = 1;
+}
+
+message LeaderStoreReq {
+    string message = 1;
+}
+
+message LeaderStoreRes {
+    repeated string files = 1;
+}
+
+message MultiRead {
+    string local_file_name = 1;
+    string sdfs_file_name = 2;
+    string leader_ip = 3;
+}
+
+message MultiWrite {
+    string local_file_name = 1;
+    string sdfs_file_name = 2;
+    string leader_ip = 3;
+}
