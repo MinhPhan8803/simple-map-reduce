@@ -622,11 +622,11 @@ pub async fn run_leader(
 
     let file_table_cloned = file_table.clone();
     let mem_cloned = members.clone();
-    // tokio::spawn(async move {
-    //     file_table_cloned
-    //         .failure_listener(rx_leader, mem_cloned)
-    //         .await
-    // });
+    tokio::spawn(async move {
+        file_table_cloned
+            .failure_listener(rx_leader, mem_cloned)
+            .await
+    });
 
     loop {
         let (mut socket, _) = listener.accept().await.unwrap(); // Declare socket as mutable

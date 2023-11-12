@@ -14,7 +14,7 @@ use tokio::time::sleep;
 use tracing::{info, instrument, trace, warn};
 
 const TF_FAIL: Duration = Duration::from_millis(2200);
-const TF_CLEAN: Duration = Duration::from_millis(4500);
+const TF_CLEAN: Duration = Duration::from_millis(5000);
 
 fn split_id_to_components<T: Deref<Target = [u8]>>(raw_id: &T) -> Option<(&str, &str)> {
     let Ok(id) = std::str::from_utf8(raw_id) else {
@@ -227,7 +227,7 @@ pub async fn receiver(
     tx_leader: mpsc::Sender<Vec<String>>,
     leader_wakeup: Arc<Notify>,
 ) {
-    let mut buffer = [0; 1024];
+    let mut buffer = [0; 2048];
     let proc_list_ip = leader_ip.clone();
     let proc_list_tx_leader = tx_leader.clone();
     let proc_list_members = members.clone();
@@ -265,9 +265,12 @@ pub async fn receiver(
 
         info!("Received message from {}", remote_addr);
         // Checking if received membership list
-        let Ok(received_message) = FailureDetection::decode(received_data) else {
-            warn!("Failed to decode membership list");
-            continue;
+        let received_message = match FailureDetection::decode(received_data) {
+            Ok(res) => res,
+            Err(e) => {
+                warn!("Failed to decode membership list {}", e);
+                continue;
+            }
         };
         match received_message.r#type {
             Some(Type::Members(received_member_list)) => {
@@ -417,6 +420,7 @@ async fn process_list(
                     }
                     warn!("Old time {}, new time {}", node.time(), local_time);
                     warn!("Removing node due to cleanup: {}", node_id);
+                    //println!("Removing node due to cleanup: {}", node_id);
                     if node.id().starts_with(leader_guard.as_bytes()) {
                         should_run_election = true;
                     }

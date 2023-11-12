@@ -16,12 +16,12 @@ use crate::member_list::MemberList;
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use chrono::offset::Local;
+use inquire::Text;
 use prost::Message;
 use std::{fs::File, net::IpAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, instrument, trace_span, Instrument};
-use inquire::Text;
 
 #[tokio::main]
 async fn main() {
@@ -190,7 +190,9 @@ async fn command_listener(
     leader_ip: Arc<RwLock<String>>,
 ) {
     let client = client::Client::new(leader_ip.clone());
-    while let Ok(Ok(input)) = tokio::task::spawn_blocking(|| Text::new("Enter command:").prompt()).await {
+    while let Ok(Ok(input)) =
+        tokio::task::spawn_blocking(|| Text::new("Enter command:").prompt()).await
+    {
         let command: Vec<_> = input.split_whitespace().collect();
         match command.as_slice() {
             ["leave"] => {
