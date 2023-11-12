@@ -3,7 +3,7 @@
 pub struct SdfsCommand {
     #[prost(
         oneof = "sdfs_command::Type",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
     )]
     pub r#type: ::core::option::Option<sdfs_command::Type>,
 }
@@ -40,6 +40,10 @@ pub mod sdfs_command {
         MultiRead(super::MultiRead),
         #[prost(message, tag = "14")]
         MultiWrite(super::MultiWrite),
+        #[prost(message, tag = "15")]
+        MapReq(super::MapReq),
+        #[prost(message, tag = "16")]
+        RedReq(super::ReduceReq),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -147,4 +151,30 @@ pub struct MultiWrite {
     pub sdfs_file_name: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub leader_ip: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MapReq {
+    #[prost(string, tag = "1")]
+    pub executable: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub num_workers: u32,
+    #[prost(string, tag = "3")]
+    pub file_name_prefix: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub input_dir: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReduceReq {
+    #[prost(string, tag = "1")]
+    pub executable: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub num_workers: u32,
+    #[prost(string, tag = "3")]
+    pub file_name_prefix: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub output_file: ::prost::alloc::string::String,
+    #[prost(bool, tag = "5")]
+    pub delete: bool,
 }

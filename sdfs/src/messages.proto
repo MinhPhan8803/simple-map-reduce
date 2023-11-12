@@ -17,6 +17,8 @@ message SDFSCommand {
         LeaderStoreRes leader_store_res = 12;
         MultiRead multi_read = 13;
         MultiWrite multi_write = 14;
+        MapReq map_req = 15;
+        ReduceReq red_req = 16;
     }
 }
 
@@ -85,4 +87,19 @@ message MultiWrite {
     string local_file_name = 1;
     string sdfs_file_name = 2;
     string leader_ip = 3;
+}
+
+message MapReq {
+    string executable = 1;
+    uint32 num_workers = 2;
+    string file_name_prefix = 3;
+    string input_dir = 4;
+}
+
+message ReduceReq {
+    string executable = 1;
+    uint32 num_workers = 2;
+    string file_name_prefix = 3;
+    string output_file = 4;
+    bool delete = 5;
 }

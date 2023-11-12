@@ -1,6 +1,7 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, GetReq, LeaderPutReq, LeaderStoreReq, LeaderStoreRes, LsRes, PutReq, SdfsCommand,
+    Ack, Delete, GetReq, LeaderPutReq, LeaderStoreReq, LeaderStoreRes, LsRes, MapReq, PutReq,
+    ReduceReq, SdfsCommand,
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -16,12 +17,38 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
 
+#[derive(Debug)]
+struct FileKey {
+    name: String,
+}
+
+impl FileKey {
+    pub fn new(file_prefix: String, key: String) -> FileKey {
+        FileKey {
+            name: format!("{file_prefix}_{key}"),
+        }
+    }
+}
+
 // Define the file table and queues
 #[derive(Debug)]
 struct FileTable {
     // Map of the file name to the VMs that have the file
     table: DashMap<String, Vec<String>>,
     actors: DashMap<String, mpsc::Sender<RequestInfo>>, // channel to actor processes
+    keys: DashMap<String, Vec<FileKey>>,
+    map_reduce_actor: Mutex<mpsc::Sender<MapReduceReqInfo>>, // channel to mapreduce process
+}
+
+struct MapReduceReqInfo {
+    request: MapReduceAccType,
+    stream: TcpStream,
+}
+
+#[derive(Debug)]
+enum MapReduceAccType {
+    Map(MapReq),
+    Reduce(ReduceReq),
 }
 
 struct RequestInfo {
@@ -36,11 +63,23 @@ enum AccessType {
 }
 
 impl FileTable {
-    fn new() -> Self {
+    fn new(map_req_tx: mpsc::Sender<MapReduceReqInfo>) -> Self {
         FileTable {
             table: DashMap::new(),
             actors: DashMap::new(),
+            keys: DashMap::new(),
+            map_reduce_actor: Mutex::new(map_req_tx),
         }
+    }
+
+    #[instrument(name = "Leader map processor", level = "trace")]
+    async fn start_map(&self, map_req: MapReq, mut socket: TcpStream) {
+        todo!()
+    }
+
+    #[instrument(name = "Leader reduce processor", level = "trace")]
+    async fn start_reduce(&self, red_req: ReduceReq, mut socket: TcpStream) {
+        todo!()
     }
 
     #[instrument(name = "Leader read processor", level = "trace")]
@@ -354,7 +393,7 @@ async fn handle_request(
     members: Arc<RwLock<Vec<Node>>>,
 ) {
     match command.r#type {
-        Some(crate::message_types::sdfs_command::Type::GetReq(get_req)) => {
+        Some(Type::GetReq(get_req)) => {
             // Send the request to this file's helper task, or spawn the helper if not running
             if let Some(tx) = file_table.actors.get_mut(&get_req.file_name) {
                 info!("Actor already running, sending READ");
@@ -381,7 +420,7 @@ async fn handle_request(
                 });
             }
         }
-        Some(crate::message_types::sdfs_command::Type::PutReq(put_req)) => {
+        Some(Type::PutReq(put_req)) => {
             // Similar to GET
             if let Some(tx) = file_table.actors.get_mut(&put_req.file_name) {
                 info!("Actor already running, sending WRITE");
@@ -408,14 +447,31 @@ async fn handle_request(
                 });
             }
         }
-        Some(crate::message_types::sdfs_command::Type::LsReq(ls_req)) => {
+        Some(Type::LsReq(ls_req)) => {
             // Similarly, enqueue the write request and then determine if it can start.
             file_table.start_ls(&ls_req.file_name, stream).await;
         }
-        Some(crate::message_types::sdfs_command::Type::Del(del_req)) => {
+        Some(Type::Del(del_req)) => {
             file_table.delete_file(del_req, stream).await;
         }
-        // ... handle other command types similarly ...
+        Some(Type::MapReq(map_req)) => {
+            let mr_tx = file_table.map_reduce_actor.lock().await;
+            let _ = mr_tx
+                .send(MapReduceReqInfo {
+                    request: MapReduceAccType::Map(map_req),
+                    stream,
+                })
+                .await;
+        }
+        Some(Type::RedReq(red_req)) => {
+            let mr_tx = file_table.map_reduce_actor.lock().await;
+            let _ = mr_tx
+                .send(MapReduceReqInfo {
+                    request: MapReduceAccType::Reduce(red_req),
+                    stream,
+                })
+                .await;
+        }
         _ => {
             stream.write_all(b"INVALID_COMMAND").await.unwrap();
         }
@@ -543,13 +599,74 @@ async fn process_operations(
     let _ = listener_handler.await;
 }
 
+#[instrument(name = "Leader map reduce scheduler", level = "trace")]
+async fn map_reduce_actor_listener(
+    mut rx: mpsc::Receiver<MapReduceReqInfo>,
+    queued_requests: Arc<Mutex<VecDeque<(MapReduceAccType, TcpStream)>>>,
+    stop_tx: oneshot::Sender<()>,
+    notifier: Arc<Notify>,
+) {
+    while let Some(info) = rx.recv().await {
+        let mut queued_requests = queued_requests.lock().await;
+        queued_requests.push_back((info.request, info.stream));
+        notifier.notify_one();
+    }
+    notifier.notify_one();
+    let _ = stop_tx.send(());
+}
+
+#[instrument(name = "Leader map reduce request processor", level = "trace")]
+async fn process_map_reduce(
+    file_table: Arc<FileTable>,
+    members: Arc<RwLock<Vec<Node>>>,
+    rx: mpsc::Receiver<MapReduceReqInfo>,
+) {
+    let queued_requests: Arc<Mutex<VecDeque<(MapReduceAccType, TcpStream)>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
+
+    let queue_clone = queued_requests.clone();
+
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+
+    let notifier = Arc::new(Notify::new());
+
+    let notifiee = notifier.clone();
+
+    let listener_handler = tokio::spawn(async move {
+        map_reduce_actor_listener(rx, queue_clone, stop_tx, notifier).await;
+    });
+    loop {
+        let mut queued = queued_requests.lock().await;
+        let front = queued.pop_front();
+        drop(queued);
+        match front {
+            Some((MapReduceAccType::Map(map_req), stream)) => {
+                file_table.start_map(map_req, stream).await
+            }
+            Some((MapReduceAccType::Reduce(red_req), stream)) => {
+                file_table.start_reduce(red_req, stream).await
+            }
+            None => notifiee.notified().await,
+        };
+        match stop_rx.try_recv() {
+            Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let _ = listener_handler.await;
+}
+
 #[instrument(name = "Leader startup and listener", level = "trace")]
 pub async fn run_leader(
     mut rx_leader: mpsc::Receiver<Vec<String>>,
     members: Arc<RwLock<Vec<Node>>>,
     timeout: Duration,
 ) {
-    let file_table = Arc::new(FileTable::new());
+    let (map_req_tx, map_req_rx) = mpsc::channel::<MapReduceReqInfo>(10);
+    let file_table = Arc::new(FileTable::new(map_req_tx));
 
     // Getting the hostname and binding should be done without blocking.
     let raw_machine_name = hostname::get().unwrap().into_string().unwrap();
@@ -626,6 +743,12 @@ pub async fn run_leader(
         file_table_cloned
             .failure_listener(rx_leader, mem_cloned)
             .await
+    });
+
+    let mr_file_table = file_table.clone();
+    let mr_mem = members.clone();
+    tokio::spawn(async move {
+        process_map_reduce(mr_file_table, mr_mem, map_req_rx).await;
     });
 
     loop {
