@@ -388,6 +388,25 @@ impl Client {
             duration
         );
     }
+
+    pub async fn map(
+        &self,
+        executable_name: &str,
+        num_workers: u32,
+        file_name_prefix: &str,
+        input_dir: &str,
+    ) {
+    }
+
+    pub async fn reduce(
+        &self,
+        executable_name: &str,
+        num_workers: u32,
+        file_name_prefix: &str,
+        input_dir: &str,
+        is_delete: bool,
+    ) {
+    }
 }
 
 #[instrument(name = "GET helper function", level = "trace")]

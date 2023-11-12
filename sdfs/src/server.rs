@@ -1,8 +1,8 @@
 use crate::client::client_get_helper;
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderStoreRes, LsRes, MultiRead, MultiWrite,
-    PutReq,
+    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderStoreRes, LsRes, MapReq, MultiRead,
+    MultiWrite, PutReq, ReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::{length_delimiter_len, Message};
@@ -342,6 +342,12 @@ async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: Multi
     let _ = client_stream.shutdown().await;
 }
 
+#[instrument(name = "Server Map", level = "trace")]
+async fn handle_map(mut leader_stream: TcpStream, map_req: MapReq) {}
+
+#[instrument(name = "Server Reduce", level = "trace")]
+async fn handle_reduce(mut leader_stream: TcpStream, red_req: ReduceReq) {}
+
 #[instrument(name = "Server startup and listener", level = "trace")]
 pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
     let raw_machine_name = hostname::get().unwrap().into_string().unwrap();
@@ -423,6 +429,16 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         info!("Received MultiWrite command from client");
                         tokio::spawn(async move {
                             handle_multi_write(stream, multi_write_req).await;
+                        });
+                    }
+                    Some(Type::MapReq(map_req)) => {
+                        tokio::spawn(async move {
+                            handle_map(stream, map_req).await;
+                        });
+                    }
+                    Some(Type::RedReq(red_req)) => {
+                        tokio::spawn(async move {
+                            handle_reduce(stream, red_req).await;
                         });
                     }
                     _ => {

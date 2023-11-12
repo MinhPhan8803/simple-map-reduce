@@ -18,7 +18,7 @@ use bytes::Bytes;
 use chrono::offset::Local;
 use inquire::Text;
 use prost::Message;
-use std::{fs::File, net::IpAddr, sync::Arc, time::Duration};
+use std::{fs::File, net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, instrument, trace_span, Instrument};
@@ -232,6 +232,32 @@ async fn command_listener(
             ["multiwrite", local_file_name, sdfs_file_name, vms @ ..] => {
                 client
                     .multi_write(local_file_name, sdfs_file_name, vms)
+                    .await;
+            }
+            ["maple", executable_name, num_workers, file_name_prefix, input_dir] => {
+                let Ok(num_workers) = num_workers.parse::<u32>() else {
+                    println!("Invalid input");
+                    continue;
+                };
+                client
+                    .map(executable_name, num_workers, file_name_prefix, input_dir)
+                    .await;
+            }
+            ["juice", executable_name, num_workers, file_name_prefix, input_dir, is_delete] => {
+                let (Ok(num_workers), Ok(is_delete)) =
+                    (num_workers.parse::<u32>(), bool::from_str(is_delete))
+                else {
+                    println!("Invalid input");
+                    continue;
+                };
+                client
+                    .reduce(
+                        executable_name,
+                        num_workers,
+                        file_name_prefix,
+                        input_dir,
+                        is_delete,
+                    )
                     .await;
             }
             ["rejoin", introducer] => {
