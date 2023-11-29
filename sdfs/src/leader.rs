@@ -1,23 +1,23 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, GetReq, LeaderPutReq, LeaderStoreReq, LeaderStoreRes, LsRes, MapReq, PutReq,
-    ReduceReq, SdfsCommand, LeaderReduceReq, KeyServers
+    Ack, Delete, GetReq, KeyServers, LeaderPutReq, LeaderReduceReq, LeaderStoreReq, LeaderStoreRes,
+    LsRes, MapReq, PutReq, ReduceReq, SdfsCommand,
 };
 use crate::node::Node;
 use dashmap::DashMap;
 use prost::Message;
 use rand::seq::{IteratorRandom, SliceRandom};
-use std::collections::{VecDeque, HashMap};
+use std::collections::{HashMap, VecDeque};
 use std::iter::{repeat, zip};
+use std::net::Ipv4Addr;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
-use std::ops::Deref;
-use std::net::Ipv4Addr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
-use tokio::time::{sleep, Duration};
 use tokio::task::JoinSet;
+use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
 
 #[derive(Debug, Clone)]
@@ -99,7 +99,13 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) {
     info!("Successfully executed reduce at worker {}", vm);
 }
 
-async fn send_leader_put_req<'recv>(sender: &Ipv4Addr, command: LeaderPutReq, fail_receivers: &mut Vec<&'recv Ipv4Addr>, receiver: &'recv Ipv4Addr, succ_receivers: &mut Vec<&'recv Ipv4Addr>) {
+async fn send_leader_put_req<'recv>(
+    sender: &Ipv4Addr,
+    command: LeaderPutReq,
+    fail_receivers: &mut Vec<&'recv Ipv4Addr>,
+    receiver: &'recv Ipv4Addr,
+    succ_receivers: &mut Vec<&'recv Ipv4Addr>,
+) {
     let message = SdfsCommand {
         r#type: Some(Type::LeaderPutReq(command)),
     }
@@ -129,7 +135,9 @@ async fn send_leader_put_req<'recv>(sender: &Ipv4Addr, command: LeaderPutReq, fa
 }
 
 async fn get_active_vms(members: Arc<RwLock<Vec<Node>>>) -> Vec<Ipv4Addr> {
-    members.read().await
+    members
+        .read()
+        .await
         .iter()
         .filter(|node| !node.fail()) // only consider nodes that haven't failed
         .map(|node| node.id())
@@ -154,16 +162,20 @@ impl FileTable {
     }
 
     #[instrument(name = "Leader reduce processor", level = "trace")]
-    async fn start_reduce(&self, red_req: ReduceReq, mut socket: TcpStream, members: Arc<RwLock<Vec<Node>>>) {
+    async fn start_reduce(
+        &self,
+        red_req: ReduceReq,
+        mut socket: TcpStream,
+        members: Arc<RwLock<Vec<Node>>>,
+    ) {
         // fetch active workers containing executable
         let key_file_map = self.keys.clone();
-        key_file_map
-                .retain(|_, v| {
-                        v.retain(|e| e.starts_with(&red_req.file_name_prefix));
-                        !v.is_empty()
-                    }
-                );
-        let key_files = key_file_map.into_iter()
+        key_file_map.retain(|_, v| {
+            v.retain(|e| e.starts_with(&red_req.file_name_prefix));
+            !v.is_empty()
+        });
+        let key_files = key_file_map
+            .into_iter()
             .map(|(_, v)| (*v[0]).clone())
             .collect::<Vec<_>>();
 
@@ -174,33 +186,42 @@ impl FileTable {
                 error!("Unable to find a key file, aborting reduce");
                 return;
             };
-            file_server_map.push((file, KeyServers { servers: storing_servers.clone().into_iter().map(|ip| ip.to_string()).collect()}));
+            file_server_map.push((
+                file,
+                KeyServers {
+                    servers: storing_servers
+                        .clone()
+                        .into_iter()
+                        .map(|ip| ip.to_string())
+                        .collect(),
+                },
+            ));
         }
 
         let mut active_vms = get_active_vms(members.clone()).await;
-        let target_vms: Vec<_> = active_vms.choose_multiple(&mut rand::thread_rng(), 4).copied().collect();
+        let target_vms: Vec<_> = active_vms
+            .choose_multiple(&mut rand::thread_rng(), 4)
+            .copied()
+            .collect();
         if target_vms.is_empty() {
             info!("Unable to pick a target VM");
             return;
         }
 
         {
-        let Some(executable_servers) = self.table.get(&red_req.executable) else {
-            info!("No executable found in the file system, abortin");
-            return;
-        };
-        active_vms.retain(|vm| executable_servers.contains(vm));
-        active_vms.truncate(red_req.num_workers as usize); 
+            let Some(executable_servers) = self.table.get(&red_req.executable) else {
+                info!("No executable found in the file system, abortin");
+                return;
+            };
+            active_vms.retain(|vm| executable_servers.contains(vm));
+            active_vms.truncate(red_req.num_workers as usize);
         }
 
         // send reduce requests to workers
         let active_vms_num = active_vms.len();
         let mut task_handlers = JoinSet::new();
         if active_vms.len() > file_server_map.len() {
-            for (vm, (key, file)) in zip(
-                active_vms.into_iter(),
-                file_server_map.into_iter()
-            ) {
+            for (vm, (key, file)) in zip(active_vms.into_iter(), file_server_map.into_iter()) {
                 let command = LeaderReduceReq {
                     key_server_map: HashMap::from([(key, file)]),
                     target_server: target_vms[0].to_string(),
@@ -212,7 +233,7 @@ impl FileTable {
         } else {
             for (vm, key_file_chunk) in zip(
                 active_vms.into_iter(),
-                file_server_map.chunks(file_server_map.len()/active_vms_num)
+                file_server_map.chunks(file_server_map.len() / active_vms_num),
             ) {
                 let command = LeaderReduceReq {
                     key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
@@ -223,9 +244,7 @@ impl FileTable {
                 task_handlers.spawn(send_leader_reduce_req(vm, command));
             }
         }
-        while (task_handlers.join_next().await).is_some() {
-
-        }
+        while (task_handlers.join_next().await).is_some() {}
 
         // request end server replicate at 3 more server
         let end_server = target_vms[0];
@@ -427,7 +446,14 @@ impl FileTable {
 
         if !succ_vms.machines.is_empty() {
             // TODO: Write this after insert is complete
-            self.table.insert(file_name.to_string(), succ_vms.machines.into_iter().map(|v| v.parse().unwrap()).collect());
+            self.table.insert(
+                file_name.to_string(),
+                succ_vms
+                    .machines
+                    .into_iter()
+                    .map(|v| v.parse().unwrap())
+                    .collect(),
+            );
         }
         let duration = start_time.elapsed();
         info!("Total time taken to write the file: {:?}", duration);
@@ -492,7 +518,14 @@ impl FileTable {
                             machine: receiver.to_string(),
                             file_name: key.to_string(),
                         };
-                        send_leader_put_req(sender, command, &mut fail_receivers, receiver, &mut succ_receivers).await;
+                        send_leader_put_req(
+                            sender,
+                            command,
+                            &mut fail_receivers,
+                            receiver,
+                            &mut succ_receivers,
+                        )
+                        .await;
                     }
                     if fail_receivers.is_empty() {
                         break;
@@ -768,7 +801,9 @@ async fn process_map_reduce(
                 file_table.start_map(map_req, stream).await
             }
             Some((MapReduceAccType::Reduce(red_req), stream)) => {
-                file_table.start_reduce(red_req, stream, members.clone()).await
+                file_table
+                    .start_reduce(red_req, stream, members.clone())
+                    .await
             }
             None => notifiee.notified().await,
         };

@@ -1,18 +1,18 @@
 use crate::client::client_get_helper;
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderStoreRes, LsRes, MapReq, MultiRead,
-    MultiWrite, PutReq, LeaderReduceReq, ServerReduceReq
+    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderReduceReq, LeaderStoreRes, LsRes,
+    MapReq, MultiRead, MultiWrite, PutReq, ServerReduceReq,
 };
+use file_lock::{FileLock, FileOptions};
 use futures::{stream, StreamExt};
 use prost::{length_delimiter_len, Message};
-use std::io::{Write, self};
-use std::{fmt, sync::Arc, process::Command};
+use std::io::{self, Write};
+use std::{fmt, process::Command, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
 use tracing::{error, info, instrument, warn};
-use file_lock::{FileLock, FileOptions};
 
 #[derive(Debug, Clone)]
 pub struct LocalFileList {
@@ -408,9 +408,7 @@ async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq
 
     let path = format!("/home/sdfs/{}", req.output_file);
     let should_we_block = true;
-    let options = FileOptions::new()
-                        .create(true)
-                        .append(true);
+    let options = FileOptions::new().create(true).append(true);
     let mut file_lock = match FileLock::lock(path, should_we_block, options) {
         Ok(lock) => lock,
         Err(e) => {
@@ -439,10 +437,7 @@ async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq
             res_buffer = res_buffer.split_off(raw_length + delim_length);
             // Write the fetched data to a local file
             if let Err(e) = file_lock.file.write_all(&res_data.data) {
-                error!(
-                    "Unable to append to file with error {}",
-                    e
-                );
+                error!("Unable to append to file with error {}", e);
                 break;
             }
         }

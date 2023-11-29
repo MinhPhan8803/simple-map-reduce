@@ -1,7 +1,7 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MultiRead, MultiWrite, PutData, PutReq, ReduceReq,
-    SdfsCommand,
+    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MultiRead, MultiWrite, PutData, PutReq,
+    ReduceReq, SdfsCommand,
 };
 use futures::stream::{self, StreamExt};
 use prost::{length_delimiter_len, Message};
@@ -422,9 +422,10 @@ impl Client {
                 num_workers,
                 file_name_prefix: file_name_prefix.to_string(),
                 output_file: input_dir.to_string(),
-                delete: is_delete
-            }))
-        }.encode_to_vec();
+                delete: is_delete,
+            })),
+        }
+        .encode_to_vec();
 
         let _ = leader_stream.write_all(&reduce_req_buffer).await;
 
