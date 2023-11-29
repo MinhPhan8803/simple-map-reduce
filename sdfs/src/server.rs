@@ -2,16 +2,17 @@ use crate::client::client_get_helper;
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderStoreRes, LsRes, MapReq, MultiRead,
-    MultiWrite, PutReq, ReduceReq,
+    MultiWrite, PutReq, LeaderReduceReq, ServerReduceReq
 };
 use futures::{stream, StreamExt};
 use prost::{length_delimiter_len, Message};
-use std::io;
-use std::{fmt, sync::Arc};
+use std::io::{Write, self};
+use std::{fmt, sync::Arc, process::Command};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
 use tracing::{error, info, instrument, warn};
+use file_lock::{FileLock, FileOptions};
 
 #[derive(Debug, Clone)]
 pub struct LocalFileList {
@@ -346,7 +347,108 @@ async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: Multi
 async fn handle_map(mut leader_stream: TcpStream, map_req: MapReq) {}
 
 #[instrument(name = "Server Reduce", level = "trace")]
-async fn handle_reduce(mut leader_stream: TcpStream, red_req: ReduceReq) {}
+async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
+    // fetch files
+    for (key, servers) in red_req.key_server_map.iter() {
+        if let Err(e) = client_get_helper(servers.servers.clone(), key, key).await {
+            error!("Unable to fetch key file: {}", e);
+            return;
+        }
+    }
+
+    // run executable and send to target server
+    for key in red_req.key_server_map.keys() {
+        if let Err(e) = Command::new(&red_req.executable).arg(key).output() {
+            error!("Unable to run executable: {}", e);
+            return;
+        }
+    }
+    let target_server_address = red_req.target_server + ":56552";
+    let Ok(mut target_server_stream) = TcpStream::connect(&target_server_address).await else {
+        warn!("Unable to contact target server, aborting");
+        return;
+    };
+    let get_req = GetReq {
+        file_name: red_req.output_file.clone(),
+    };
+    let req_buf = SdfsCommand {
+        r#type: Some(Type::ServerRedReq(ServerReduceReq {
+            output_file: red_req.output_file,
+        })),
+    }
+    .encode_to_vec();
+    let _ = target_server_stream.write_all(&req_buf).await;
+    let mut res_buf = [0; 1024];
+    let Ok(n) = target_server_stream.read(&mut res_buf).await else {
+        warn!("Failed to read ACK from the other server");
+        return;
+    };
+    if let Err(e) = Ack::decode(&res_buf[..n]) {
+        warn!("Unable to decode ACK message: {}", e);
+        return;
+    }
+    handle_get(get_req, target_server_stream).await;
+
+    // end request
+    let leader_ack_buffer = Ack {
+        message: "Worker successfully executed reduce".to_string(),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&leader_ack_buffer).await;
+    let _ = leader_stream.shutdown().await;
+}
+
+async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq) {
+    info!("Handling server Reduce request");
+    let ack_buffer = Ack {
+        message: "Reduce acknowledged".to_string(),
+    }
+    .encode_to_vec();
+    let _ = server_stream.write_all(&ack_buffer).await;
+
+    let path = format!("/home/sdfs/{}", req.output_file);
+    let should_we_block = true;
+    let options = FileOptions::new()
+                        .create(true)
+                        .append(true);
+    let mut file_lock = match FileLock::lock(path, should_we_block, options) {
+        Ok(lock) => lock,
+        Err(e) => {
+            error!("Unable to acquire lock on reduce file: {}", e);
+            return;
+        }
+    };
+
+    let mut res_buffer: Vec<u8> = Vec::new();
+    let mut remaining_buffer = [0; 5120];
+
+    while let Ok(n) = server_stream.read(&mut remaining_buffer).await {
+        //println!("Read data from client with size {}", n);
+        if n == 0 {
+            break;
+        }
+
+        let (left, _) = remaining_buffer.split_at_mut(n);
+        res_buffer.extend_from_slice(left);
+        remaining_buffer.fill(0);
+
+        while let Ok(res_data) = GetData::decode_length_delimited(res_buffer.as_slice()) {
+            //println!("Decoded data from client, seeking file to: {}", res_data.offset);
+            let raw_length = res_data.encoded_len();
+            let delim_length = length_delimiter_len(raw_length);
+            res_buffer = res_buffer.split_off(raw_length + delim_length);
+            // Write the fetched data to a local file
+            if let Err(e) = file_lock.file.write_all(&res_data.data) {
+                error!(
+                    "Unable to append to file with error {}",
+                    e
+                );
+                break;
+            }
+        }
+    }
+    info!("Server wrote reduce data successfully");
+}
 
 #[instrument(name = "Server startup and listener", level = "trace")]
 pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
@@ -436,9 +538,14 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                             handle_map(stream, map_req).await;
                         });
                     }
-                    Some(Type::RedReq(red_req)) => {
+                    Some(Type::LeaderRedReq(red_req)) => {
                         tokio::spawn(async move {
                             handle_reduce(stream, red_req).await;
+                        });
+                    }
+                    Some(Type::ServerRedReq(req)) => {
+                        tokio::spawn(async move {
+                            handle_server_reduce(stream, req).await;
                         });
                     }
                     _ => {

@@ -19,6 +19,8 @@ message SDFSCommand {
         MultiWrite multi_write = 14;
         MapReq map_req = 15;
         ReduceReq red_req = 16;
+        LeaderReduceReq leader_red_req = 20;
+        ServerReduceReq server_red_req = 21;
     }
 }
 
@@ -102,4 +104,19 @@ message ReduceReq {
     string file_name_prefix = 3;
     string output_file = 4;
     bool delete = 5;
+}
+
+message LeaderReduceReq {
+    map<string, KeyServers> key_server_map = 1;
+    string target_server = 2;
+    string output_file = 3;
+    string executable = 4;
+}
+
+message KeyServers {
+    repeated string servers = 1;
+}
+
+message ServerReduceReq {
+    string output_file = 1;
 }

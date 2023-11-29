@@ -1,23 +1,26 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
     Ack, Delete, GetReq, LeaderPutReq, LeaderStoreReq, LeaderStoreRes, LsRes, MapReq, PutReq,
-    ReduceReq, SdfsCommand,
+    ReduceReq, SdfsCommand, LeaderReduceReq, KeyServers
 };
 use crate::node::Node;
 use dashmap::DashMap;
 use prost::Message;
 use rand::seq::{IteratorRandom, SliceRandom};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::iter::{repeat, zip};
 use std::sync::Arc;
 use std::time::Instant;
+use std::ops::Deref;
+use std::net::Ipv4Addr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{sleep, Duration};
+use tokio::task::JoinSet;
 use tracing::{error, info, instrument, warn};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileKey {
     name: String,
 }
@@ -30,11 +33,19 @@ impl FileKey {
     }
 }
 
+impl Deref for FileKey {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.name
+    }
+}
+
 // Define the file table and queues
 #[derive(Debug)]
 struct FileTable {
     // Map of the file name to the VMs that have the file
-    table: DashMap<String, Vec<String>>,
+    table: DashMap<String, Vec<Ipv4Addr>>,
     actors: DashMap<String, mpsc::Sender<RequestInfo>>, // channel to actor processes
     keys: DashMap<String, Vec<FileKey>>,
     map_reduce_actor: Mutex<mpsc::Sender<MapReduceReqInfo>>, // channel to mapreduce process
@@ -62,6 +73,71 @@ enum AccessType {
     Write(PutReq),
 }
 
+async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) {
+    let message = SdfsCommand {
+        r#type: Some(Type::LeaderRedReq(command)),
+    }
+    .encode_to_vec();
+    //Append server port to sender
+    let vm = vm.to_string() + ":56552";
+    info!("Sending new Reduce to server: {}", vm);
+    let Ok(mut stream) = TcpStream::connect(&vm).await else {
+        error!("Failed to contact reduce worker {}", vm);
+        return;
+    };
+
+    let _ = stream.write_all(&message).await;
+    let mut res = Vec::new();
+    if let Err(e) = stream.read_to_end(&mut res).await {
+        error!("Failed to get ack from reduce worker {}: {}", vm, e);
+        return;
+    }
+    if let Err(e) = Ack::decode(res.as_slice()) {
+        error!("Failed to decode ack from reduce worker {}: {}", vm, e);
+        return;
+    }
+    info!("Successfully executed reduce at worker {}", vm);
+}
+
+async fn send_leader_put_req<'recv>(sender: &Ipv4Addr, command: LeaderPutReq, fail_receivers: &mut Vec<&'recv Ipv4Addr>, receiver: &'recv Ipv4Addr, succ_receivers: &mut Vec<&'recv Ipv4Addr>) {
+    let message = SdfsCommand {
+        r#type: Some(Type::LeaderPutReq(command)),
+    }
+    .encode_to_vec();
+    //Append server port to sender
+    let sender = sender.to_string() + ":56552";
+    info!("Sending new PUT to server: {}", sender);
+    let Ok(mut stream) = TcpStream::connect(&sender).await else {
+        error!("Failed to contact sender machine {}", sender);
+        fail_receivers.push(receiver);
+        return;
+    };
+    let _ = stream.write_all(&message).await;
+    let mut res = Vec::new();
+    if let Err(e) = stream.read_to_end(&mut res).await {
+        error!("Failed to get ack from sender machine {}: {}", sender, e);
+        fail_receivers.push(receiver);
+        return;
+    }
+    if let Err(e) = Ack::decode(res.as_slice()) {
+        error!("Failed to decode ack from sender machine {}: {}", sender, e);
+        fail_receivers.push(receiver);
+        return;
+    }
+    info!("Successfully replicated file at receiver: {}", receiver);
+    succ_receivers.push(receiver);
+}
+
+async fn get_active_vms(members: Arc<RwLock<Vec<Node>>>) -> Vec<Ipv4Addr> {
+    members.read().await
+        .iter()
+        .filter(|node| !node.fail()) // only consider nodes that haven't failed
+        .map(|node| node.id())
+        .filter_map(|bytes| String::from_utf8(bytes.to_vec()).ok())
+        .filter_map(|s| s.split_once('_').map(|(pre, _)| pre)?.parse().ok())
+        .collect::<Vec<_>>()
+}
+
 impl FileTable {
     fn new(map_req_tx: mpsc::Sender<MapReduceReqInfo>) -> Self {
         FileTable {
@@ -78,8 +154,98 @@ impl FileTable {
     }
 
     #[instrument(name = "Leader reduce processor", level = "trace")]
-    async fn start_reduce(&self, red_req: ReduceReq, mut socket: TcpStream) {
-        todo!()
+    async fn start_reduce(&self, red_req: ReduceReq, mut socket: TcpStream, members: Arc<RwLock<Vec<Node>>>) {
+        // fetch active workers containing executable
+        let key_file_map = self.keys.clone();
+        key_file_map
+                .retain(|_, v| {
+                        v.retain(|e| e.starts_with(&red_req.file_name_prefix));
+                        !v.is_empty()
+                    }
+                );
+        let key_files = key_file_map.into_iter()
+            .map(|(_, v)| (*v[0]).clone())
+            .collect::<Vec<_>>();
+
+        let mut file_server_map = Vec::new();
+
+        for file in key_files {
+            let Some(storing_servers) = self.table.get(&file) else {
+                error!("Unable to find a key file, aborting reduce");
+                return;
+            };
+            file_server_map.push((file, KeyServers { servers: storing_servers.clone().into_iter().map(|ip| ip.to_string()).collect()}));
+        }
+
+        let mut active_vms = get_active_vms(members.clone()).await;
+        let target_vms: Vec<_> = active_vms.choose_multiple(&mut rand::thread_rng(), 4).copied().collect();
+        if target_vms.is_empty() {
+            info!("Unable to pick a target VM");
+            return;
+        }
+
+        {
+        let Some(executable_servers) = self.table.get(&red_req.executable) else {
+            info!("No executable found in the file system, abortin");
+            return;
+        };
+        active_vms.retain(|vm| executable_servers.contains(vm));
+        active_vms.truncate(red_req.num_workers as usize); 
+        }
+
+        // send reduce requests to workers
+        let active_vms_num = active_vms.len();
+        let mut task_handlers = JoinSet::new();
+        if active_vms.len() > file_server_map.len() {
+            for (vm, (key, file)) in zip(
+                active_vms.into_iter(),
+                file_server_map.into_iter()
+            ) {
+                let command = LeaderReduceReq {
+                    key_server_map: HashMap::from([(key, file)]),
+                    target_server: target_vms[0].to_string(),
+                    output_file: red_req.output_file.clone(),
+                    executable: red_req.executable.clone(),
+                };
+                task_handlers.spawn(send_leader_reduce_req(vm, command));
+            }
+        } else {
+            for (vm, key_file_chunk) in zip(
+                active_vms.into_iter(),
+                file_server_map.chunks(file_server_map.len()/active_vms_num)
+            ) {
+                let command = LeaderReduceReq {
+                    key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
+                    target_server: target_vms[0].to_string(),
+                    output_file: red_req.output_file.clone(),
+                    executable: red_req.executable.clone(),
+                };
+                task_handlers.spawn(send_leader_reduce_req(vm, command));
+            }
+        }
+        while (task_handlers.join_next().await).is_some() {
+
+        }
+
+        // request end server replicate at 3 more server
+        let end_server = target_vms[0];
+        for vm in target_vms.iter().skip(1) {
+            let command = LeaderPutReq {
+                machine: vm.to_string(),
+                file_name: red_req.output_file.clone(),
+            };
+            send_leader_put_req(&end_server, command, &mut Vec::new(), vm, &mut Vec::new()).await;
+        }
+
+        // end request
+        let ack_buffer = Ack {
+            message: "Reduce successful".to_string(),
+        }
+        .encode_to_vec();
+
+        if let Err(e) = socket.write_all(&ack_buffer).await {
+            warn!("Failed to send reduce ack to client: {:?}", e);
+        }
     }
 
     #[instrument(name = "Leader read processor", level = "trace")]
@@ -92,7 +258,7 @@ impl FileTable {
         // Check if the file is available on any VMs.
         if let Some(vms) = self.table.get(file_name) {
             let response = LsRes {
-                machines: vms.clone(),
+                machines: vms.iter().map(|ip| ip.to_string()).collect(),
             };
             info!("Ls Response for get: {:?}", response);
             let buffer = response.encode_to_vec();
@@ -124,7 +290,7 @@ impl FileTable {
         info!("Starting Ls at leader");
         if let Some(vms) = self.table.get(file_name) {
             let response = LsRes {
-                machines: vms.clone(),
+                machines: vms.iter().map(|ip| ip.to_string()).collect(),
             };
             info!("Ls Response for LsReq: {:?}", response);
             let mut buffer = Vec::new();
@@ -150,7 +316,7 @@ impl FileTable {
         let file_name = &del_req.file_name;
         if let Some(vms) = self.table.get(file_name) {
             for machine in vms.iter() {
-                let server_address = machine.to_owned() + ":56552";
+                let server_address = machine.to_string() + ":56552";
                 let Ok(mut server_stream) = TcpStream::connect(&server_address).await else {
                     warn!(
                         "Unable to connect to server {}, ignoring server",
@@ -215,16 +381,7 @@ impl FileTable {
         info!("Starting Write at leader");
         let file_name = &put_req.file_name;
 
-        let read_guard = members.read().await;
-
-        let active_vms = read_guard
-            .iter()
-            .filter(|node| !node.fail()) // only consider nodes that haven't failed
-            .map(|node| node.id())
-            .filter_map(|bytes| String::from_utf8(bytes.to_vec()).ok())
-            .filter_map(|s| s.split_once('_').map(|(pre, _)| pre.to_string()))
-            .collect::<Vec<_>>();
-        drop(read_guard);
+        let active_vms = get_active_vms(members).await;
 
         let start_time = Instant::now(); // Capture the start time
         info!("Active VMs (write handler task): {:?}", active_vms);
@@ -247,7 +404,7 @@ impl FileTable {
 
         // Send back the response to the client.
         let response = LsRes {
-            machines: selected_vm_names,
+            machines: selected_vm_names.iter().map(|ip| ip.to_string()).collect(),
         };
         let buffer = response.encode_to_vec();
         if let Err(e) = socket.write_all(&buffer).await {
@@ -270,7 +427,7 @@ impl FileTable {
 
         if !succ_vms.machines.is_empty() {
             // TODO: Write this after insert is complete
-            self.table.insert(file_name.to_string(), succ_vms.machines);
+            self.table.insert(file_name.to_string(), succ_vms.machines.into_iter().map(|v| v.parse().unwrap()).collect());
         }
         let duration = start_time.elapsed();
         info!("Total time taken to write the file: {:?}", duration);
@@ -291,7 +448,7 @@ impl FileTable {
             for mut elem in self.table.iter_mut() {
                 let (key, val) = elem.pair_mut();
                 let prev_size = val.len();
-                val.retain(|elem| !machine.contains(elem));
+                val.retain(|elem| !machine.contains(&elem.to_string()));
 
                 let mut missing = prev_size - val.len();
                 warn!("Missing {} replicas", missing);
@@ -302,16 +459,7 @@ impl FileTable {
                 let start_time = Instant::now();
                 info!("Replicating file: {}", key);
 
-                let mem = members.read().await;
-                let mem_lock = mem.clone();
-                drop(mem);
-                let active_vms: Vec<_> = mem_lock
-                    .iter()
-                    .filter(|node| !node.fail()) // only consider nodes that haven't failed
-                    .map(|node| node.id())
-                    .filter_map(|bytes| String::from_utf8(bytes.to_vec()).ok())
-                    .filter_map(|s| s.split_once('_').map(|(pre, _)| pre.to_string()))
-                    .collect::<Vec<_>>();
+                let active_vms = get_active_vms(members.clone()).await;
 
                 info!("Active VMs (failure task) {:?}", active_vms);
 
@@ -340,35 +488,11 @@ impl FileTable {
                         machines_to_req.iter().chain(repeat(&rem_elem)),
                         machines_to_recv.iter(),
                     ) {
-                        let message = SdfsCommand {
-                            r#type: Some(Type::LeaderPutReq(LeaderPutReq {
-                                machine: receiver.to_string(),
-                                file_name: key.to_string(),
-                            })),
-                        }
-                        .encode_to_vec();
-                        //Append server port to sender
-                        let sender = sender.to_string() + ":56552";
-                        info!("Sending new PUT to server: {}", sender);
-                        let Ok(mut stream) = TcpStream::connect(&sender).await else {
-                            error!("Failed to contact sender machine {}", sender);
-                            fail_receivers.push(*receiver);
-                            continue;
+                        let command = LeaderPutReq {
+                            machine: receiver.to_string(),
+                            file_name: key.to_string(),
                         };
-                        let _ = stream.write_all(&message).await;
-                        let mut res = Vec::new();
-                        if let Err(e) = stream.read_to_end(&mut res).await {
-                            error!("Failed to get ack from sender machine {}: {}", sender, e);
-                            fail_receivers.push(*receiver);
-                            continue;
-                        }
-                        if let Err(e) = Ack::decode(res.as_slice()) {
-                            error!("Failed to decode ack from sender machine {}: {}", sender, e);
-                            fail_receivers.push(*receiver);
-                            continue;
-                        }
-                        info!("Successfully replicated file at receiver: {}", receiver);
-                        succ_receivers.push(receiver);
+                        send_leader_put_req(sender, command, &mut fail_receivers, receiver, &mut succ_receivers).await;
                     }
                     if fail_receivers.is_empty() {
                         break;
@@ -644,7 +768,7 @@ async fn process_map_reduce(
                 file_table.start_map(map_req, stream).await
             }
             Some((MapReduceAccType::Reduce(red_req), stream)) => {
-                file_table.start_reduce(red_req, stream).await
+                file_table.start_reduce(red_req, stream, members.clone()).await
             }
             None => notifiee.notified().await,
         };
@@ -718,8 +842,8 @@ pub async fn run_leader(
                                     file_table
                                         .table
                                         .entry(file_name)
-                                        .and_modify(|e| e.push(machine_name.clone()))
-                                        .or_insert_with(|| vec![machine_name.clone()]);
+                                        .and_modify(|e| e.push(ip_address.parse().unwrap()))
+                                        .or_insert_with(|| vec![ip_address.parse().unwrap()]);
                                 }
                             } else {
                                 warn!("Failed to decode LeaderStoreRes from {}", machine_name);

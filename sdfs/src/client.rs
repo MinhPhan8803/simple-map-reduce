@@ -1,6 +1,6 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MultiRead, MultiWrite, PutData, PutReq,
+    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MultiRead, MultiWrite, PutData, PutReq, ReduceReq,
     SdfsCommand,
 };
 use futures::stream::{self, StreamExt};
@@ -406,6 +406,38 @@ impl Client {
         input_dir: &str,
         is_delete: bool,
     ) {
+        info!("Starting Reduce on client side");
+        let leader_address = {
+            let locked = self.leader_ip.read().await;
+            locked.clone() + ":56553"
+        };
+        let Ok(mut leader_stream) = TcpStream::connect(leader_address).await else {
+            error!("Unable to contact leader, aborting");
+            return;
+        };
+
+        let reduce_req_buffer = SdfsCommand {
+            r#type: Some(Type::RedReq(ReduceReq {
+                executable: executable_name.to_string(),
+                num_workers,
+                file_name_prefix: file_name_prefix.to_string(),
+                output_file: input_dir.to_string(),
+                delete: is_delete
+            }))
+        }.encode_to_vec();
+
+        let _ = leader_stream.write_all(&reduce_req_buffer).await;
+
+        let mut res_buffer = [0; 1024];
+        let Ok(n) = leader_stream.read(&mut res_buffer).await else {
+            error!("No leader response to request: ");
+            return;
+        };
+        if let Err(e) = Ack::decode(&res_buffer[..n]) {
+            error!("Unable to decode leader ack response: {}", e);
+        } else {
+            info!("Reduce successful");
+        };
     }
 }
 

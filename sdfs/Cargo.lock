@@ -225,6 +225,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25cbce373ec4653f1a01a31e8a5e5ec0c622dc27ff9c4e6606eefef5cbbed4a5"
 
 [[package]]
+name = "file-lock"
+version = "2.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec788ff423b138c9c5faf201347926573b605c517fb1c5a56aa632b218bf47bb"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,6 +897,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "file-lock",
  "futures",
  "hostname",
  "indicatif",
