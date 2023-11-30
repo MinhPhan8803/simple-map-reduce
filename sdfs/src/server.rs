@@ -1,15 +1,13 @@
-use crate::client::client_get_helper;
+use crate::helpers::{write_to_buf, client_get_helper};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
     LeaderStoreRes, LsRes, MapReq, MultiRead, MultiWrite, PutReq, ServerReduceReq,
 };
-use file_lock::{FileLock, FileOptions};
 use futures::{stream, StreamExt};
-use prost::{length_delimiter_len, Message};
-use std::io::{self, Write};
+use prost::Message;
 use std::{fmt, process::Command, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
 use tracing::{error, info, instrument, warn};
@@ -64,38 +62,8 @@ async fn handle_put(
         return;
     };
 
-    let mut res_buffer: Vec<u8> = Vec::new();
-    let mut remaining_buffer = [0; 5120];
+    write_to_buf(&mut file, stream).await;
 
-    while let Ok(n) = stream.read(&mut remaining_buffer).await {
-        //println!("Read data from client with size {}", n);
-        if n == 0 {
-            break;
-        }
-
-        let (left, _) = remaining_buffer.split_at_mut(n);
-        res_buffer.extend_from_slice(left);
-        remaining_buffer.fill(0);
-
-        while let Ok(res_data) = GetData::decode_length_delimited(res_buffer.as_slice()) {
-            //println!("Decoded data from client, seeking file to: {}", res_data.offset);
-            let raw_length = res_data.encoded_len();
-            let delim_length = length_delimiter_len(raw_length);
-            res_buffer = res_buffer.split_off(raw_length + delim_length);
-            if let Err(e) = file.seek(io::SeekFrom::Start(res_data.offset)).await {
-                error!("Unable to seek file {}, aborting", e);
-                return;
-            };
-            // Write the fetched data to a local file
-            if let Err(e) = file.write_all(&res_data.data).await {
-                error!(
-                    "Unable to write to file at offset {} with error {}",
-                    res_data.offset, e
-                );
-                break;
-            }
-        }
-    }
     if let Err(e) = file.sync_all().await {
         error!("Unable to sync file {e}");
     } else {
@@ -467,42 +435,28 @@ async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq
     .encode_to_vec();
     let _ = server_stream.write_all(&ack_buffer).await;
 
+    let mut data_buffer = Vec::new();
+    write_to_buf(&mut data_buffer, server_stream).await;
+
     let path = format!("/home/sdfs/{}", req.output_file);
-    let should_we_block = true;
-    let options = FileOptions::new().create(true).append(true);
-    let mut file_lock = match FileLock::lock(path, should_we_block, options) {
-        Ok(lock) => lock,
-        Err(e) => {
-            error!("Unable to acquire lock on reduce file: {}", e);
-            return;
-        }
+    let Ok(file) = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .await
+    else {
+        error!("Unable to open file");
+        return;
     };
-
-    let mut res_buffer: Vec<u8> = Vec::new();
-    let mut remaining_buffer = [0; 5120];
-
-    while let Ok(n) = server_stream.read(&mut remaining_buffer).await {
-        //println!("Read data from client with size {}", n);
-        if n == 0 {
-            break;
-        }
-
-        let (left, _) = remaining_buffer.split_at_mut(n);
-        res_buffer.extend_from_slice(left);
-        remaining_buffer.fill(0);
-
-        while let Ok(res_data) = GetData::decode_length_delimited(res_buffer.as_slice()) {
-            //println!("Decoded data from client, seeking file to: {}", res_data.offset);
-            let raw_length = res_data.encoded_len();
-            let delim_length = length_delimiter_len(raw_length);
-            res_buffer = res_buffer.split_off(raw_length + delim_length);
-            // Write the fetched data to a local file
-            if let Err(e) = file_lock.file.write_all(&res_data.data) {
-                error!("Unable to append to file with error {}", e);
-                break;
-            }
-        }
-    }
+    let mut file_lock = fd_lock::RwLock::new(file);
+    let Ok(mut locked_file) = file_lock.write() else {
+        error!("Unable to acquire a file lock");
+        return;
+    };
+    if let Err(e) = locked_file.write_all(&data_buffer).await {
+        error!("Unable to append to file with error {}", e);
+        return;
+    };
     info!("Server wrote reduce data successfully");
 }
 

@@ -4,6 +4,7 @@ mod node;
 mod receiver;
 mod sender;
 mod server;
+mod helpers;
 use node::Node;
 use server::LocalFileList;
 pub mod message_types {
