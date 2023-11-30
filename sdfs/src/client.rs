@@ -1,7 +1,7 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MultiRead, MultiWrite, PutData, PutReq,
-    ReduceReq, SdfsCommand,
+    Ack, Delete, Fail, GetData, GetReq, LsReq, LsRes, MapReq, MultiRead, MultiWrite, PutData,
+    PutReq, ReduceReq, SdfsCommand,
 };
 use futures::stream::{self, StreamExt};
 use prost::{length_delimiter_len, Message};
@@ -396,6 +396,38 @@ impl Client {
         file_name_prefix: &str,
         input_dir: &str,
     ) {
+        info!("Starting Map on client side");
+        let leader_address = {
+            let locked = self.leader_ip.read().await;
+            locked.clone() + ":56553"
+        };
+        let Ok(mut leader_stream) = TcpStream::connect(leader_address).await else {
+            error!("Unable to contact leader, aborting");
+            return;
+        };
+
+        let map_req_buffer = SdfsCommand {
+            r#type: Some(Type::MapReq(MapReq {
+                executable: executable_name.to_string(),
+                num_workers,
+                file_name_prefix: file_name_prefix.to_string(),
+                input_dir: input_dir.to_string(),
+            })),
+        }
+        .encode_to_vec();
+
+        let _ = leader_stream.write_all(&map_req_buffer).await;
+
+        let mut res_buffer = [0; 1024];
+        let Ok(n) = leader_stream.read(&mut res_buffer).await else {
+            error!("No leader response to request: ");
+            return;
+        };
+        if let Err(e) = Ack::decode(&res_buffer[..n]) {
+            error!("Unable to decode leader ack response: {}", e);
+        } else {
+            info!("Map successful");
+        };
     }
 
     pub async fn reduce(

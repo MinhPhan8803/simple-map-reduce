@@ -3,7 +3,7 @@
 pub struct SdfsCommand {
     #[prost(
         oneof = "sdfs_command::Type",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21"
     )]
     pub r#type: ::core::option::Option<sdfs_command::Type>,
 }
@@ -44,8 +44,14 @@ pub mod sdfs_command {
         MapReq(super::MapReq),
         #[prost(message, tag = "16")]
         RedReq(super::ReduceReq),
+        #[prost(message, tag = "17")]
+        LeaderMapReq(super::LeaderMapReq),
+        #[prost(message, tag = "18")]
+        ServerMapReq(super::ServerMapReq),
         #[prost(message, tag = "20")]
         LeaderRedReq(super::LeaderReduceReq),
+        #[prost(message, tag = "21")]
+        ServerRedReq(super::ServerReduceReq),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -197,7 +203,31 @@ pub struct LeaderReduceReq {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LeaderMapReq {
+    #[prost(string, tag = "1")]
+    pub executable: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub file_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub start_line: u32,
+    #[prost(uint32, tag = "4")]
+    pub end_line: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServerMapReq {
+    #[prost(string, tag = "1")]
+    pub output_file: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeyServers {
     #[prost(string, repeated, tag = "1")]
     pub servers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServerReduceReq {
+    #[prost(string, tag = "1")]
+    pub output_file: ::prost::alloc::string::String,
 }

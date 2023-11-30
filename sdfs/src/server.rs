@@ -1,8 +1,8 @@
 use crate::client::client_get_helper;
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LeaderPutReq, LeaderReduceReq, LeaderStoreRes, LsRes,
-    MapReq, MultiRead, MultiWrite, PutReq, ServerReduceReq,
+    Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
+    LeaderStoreRes, LsRes, MapReq, MultiRead, MultiWrite, PutReq, ServerReduceReq,
 };
 use file_lock::{FileLock, FileOptions};
 use futures::{stream, StreamExt};
@@ -344,7 +344,68 @@ async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: Multi
 }
 
 #[instrument(name = "Server Map", level = "trace")]
-async fn handle_map(mut leader_stream: TcpStream, map_req: MapReq) {}
+async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
+    // run executable and on the file from map_req.file_name
+
+    // First, fetch the file from the SDFS server
+    let get_req = GetReq {
+        file_name: map_req.file_name.clone(),
+    };
+    let req_buf = SdfsCommand {
+        r#type: Some(Type::GetReq(get_req)),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&req_buf).await;
+    let mut res_buf = [0; 1024];
+    let n = leader_stream.read(&mut res_buf).await.unwrap();
+    if let Err(e) = Ack::decode(&res_buf[..n]) {
+        warn!("Unable to decode ACK message: {}", e);
+        return;
+    }
+
+    // run the executable
+    if let Err(e) = Command::new(&map_req.executable)
+        .arg(&map_req.file_name)
+        .output()
+    {
+        error!("Unable to run executable: {}", e);
+        return;
+    }
+
+    // PUT the output files to the target SDFS server
+    let prefix = map_req.intermediate_prefix.clone() + "/";
+    let mut paths = fs::read_dir(".").await.unwrap();
+    while let Some(res) = paths.next_entry().await.unwrap() {
+        let path = res.path();
+        if path.is_file() {
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+            if file_name.starts_with(&prefix) {
+                let put_req = PutReq {
+                    file_name: file_name.to_string(),
+                };
+                let req_buf = SdfsCommand {
+                    r#type: Some(Type::PutReq(put_req)),
+                }
+                .encode_to_vec();
+                let _ = leader_stream.write_all(&req_buf).await;
+                let mut res_buf = [0; 1024];
+                let n = leader_stream.read(&mut res_buf).await.unwrap();
+                if let Err(e) = Ack::decode(&res_buf[..n]) {
+                    warn!("Unable to decode ACK message: {}", e);
+                    return;
+                }
+            }
+        }
+    }
+
+    // ack the leader
+    let leader_ack_buffer = Ack {
+        message: "Worker successfully executed map".to_string(),
+    }
+    .encode_to_vec();
+    let _ = leader_stream.write_all(&leader_ack_buffer).await;
+    let _ = leader_stream.shutdown().await;
+}
 
 #[instrument(name = "Server Reduce", level = "trace")]
 async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
@@ -528,7 +589,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                             handle_multi_write(stream, multi_write_req).await;
                         });
                     }
-                    Some(Type::MapReq(map_req)) => {
+                    Some(Type::LeaderMapReq(map_req)) => {
                         tokio::spawn(async move {
                             handle_map(stream, map_req).await;
                         });

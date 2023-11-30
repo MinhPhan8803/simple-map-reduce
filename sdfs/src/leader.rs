@@ -1,7 +1,7 @@
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, GetReq, KeyServers, LeaderPutReq, LeaderReduceReq, LeaderStoreReq, LeaderStoreRes,
-    LsRes, MapReq, PutReq, ReduceReq, SdfsCommand,
+    Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LeaderStoreReq,
+    LeaderStoreRes, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand,
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -99,6 +99,32 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) {
     info!("Successfully executed reduce at worker {}", vm);
 }
 
+async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) {
+    let message = SdfsCommand {
+        r#type: Some(Type::LeaderMapReq(command)),
+    }
+    .encode_to_vec();
+    //Append server port to sender
+    let vm = vm.to_string() + ":56552";
+    info!("Sending new Map to server: {}", vm);
+    let Ok(mut stream) = TcpStream::connect(&vm).await else {
+        error!("Failed to contact map worker {}", vm);
+        return;
+    };
+
+    let _ = stream.write_all(&message).await;
+    let mut res = Vec::new();
+    if let Err(e) = stream.read_to_end(&mut res).await {
+        error!("Failed to get ack from map worker {}: {}", vm, e);
+        return;
+    }
+    if let Err(e) = Ack::decode(res.as_slice()) {
+        error!("Failed to decode ack from map worker {}: {}", vm, e);
+        return;
+    }
+    info!("Successfully executed map at worker {}", vm);
+}
+
 async fn send_leader_put_req<'recv>(
     sender: &Ipv4Addr,
     command: LeaderPutReq,
@@ -157,9 +183,79 @@ impl FileTable {
     }
 
     #[instrument(name = "Leader map processor", level = "trace")]
-    async fn start_map(&self, map_req: MapReq, mut socket: TcpStream) {
-        todo!()
+    async fn start_map(
+        &self,
+        map_req: MapReq,
+        mut socket: TcpStream,
+        members: Arc<RwLock<Vec<Node>>>,
+    ) {
+        // Step 1: Find files with the prefix map_req.input_dir.concat("/") in the FileTable table
+        let prefix = map_req.input_dir.clone() + "/";
+        let key_files: Vec<String> = self
+            .table
+            .iter()
+            .map(|elem| elem.key().to_string())
+            .filter(|file| file.starts_with(&prefix))
+            .collect();
+
+        // Step 2: Find active workers containing the executable
+        let mut active_vms = get_active_vms(members.clone()).await;
+        if active_vms.is_empty() {
+            info!("Unable to pick a target VM");
+            return;
+        }
+        {
+            let Some(executable_servers) = self.table.get(&map_req.executable) else {
+                info!("No executable found in the file system, abortin");
+                return;
+            };
+            active_vms.retain(|vm| executable_servers.contains(vm));
+            active_vms.truncate(map_req.num_workers as usize);
+        }
+
+        //TODO Find min of total active and number of workers
+
+        // Step 3: Distribute files among workers
+        let num_files = key_files.len();
+        let num_workers = active_vms.len();
+        let files_per_worker = num_files / num_workers;
+        let mut file_chunks = key_files.chunks(files_per_worker);
+
+        let mut task_handlers = JoinSet::new();
+        for vm in active_vms.into_iter() {
+            if let Some(file_chunk) = file_chunks.next() {
+                for file in file_chunk {
+                    let command = LeaderMapReq {
+                        file_name: file.clone(),
+                        start_line: 0,
+                        end_line: 0,
+                        executable: map_req.executable.clone(),
+                        intermediate_prefix: map_req.file_name_prefix.clone(),
+                    };
+                    task_handlers.spawn(send_leader_map_req(vm, command));
+                }
+            }
+        }
+
+        while let Some(_) = task_handlers.join_next().await {}
+
+        // Step 4: Once successful, populate FileTable.keys with the key and the file name
+        // for file in key_files {
+        //     self.keys.insert(file.clone(), Vec::new());
+        // }
+
+        // Step 5: Send a message to the client that the map is successful
+        let ack_buffer = Ack {
+            message: "Map successful".to_string(),
+        }
+        .encode_to_vec();
+
+        if let Err(e) = socket.write_all(&ack_buffer).await {
+            warn!("Failed to send map ack to client: {:?}", e);
+        }
     }
+
+    // Implement the `get_file_line_count` and `send_map_task_to_worker` functions as needed
 
     #[instrument(name = "Leader reduce processor", level = "trace")]
     async fn start_reduce(
@@ -798,7 +894,7 @@ async fn process_map_reduce(
         drop(queued);
         match front {
             Some((MapReduceAccType::Map(map_req), stream)) => {
-                file_table.start_map(map_req, stream).await
+                file_table.start_map(map_req, stream, members.clone()).await
             }
             Some((MapReduceAccType::Reduce(red_req), stream)) => {
                 file_table

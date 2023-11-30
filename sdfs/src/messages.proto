@@ -19,6 +19,8 @@ message SDFSCommand {
         MultiWrite multi_write = 14;
         MapReq map_req = 15;
         ReduceReq red_req = 16;
+        LeaderMapReq leader_map_req = 17;
+        ServerMapReq server_map_req = 18;
         LeaderReduceReq leader_red_req = 20;
         ServerReduceReq server_red_req = 21;
     }
@@ -111,6 +113,18 @@ message LeaderReduceReq {
     string target_server = 2;
     string output_file = 3;
     string executable = 4;
+}
+
+message LeaderMapReq {
+    string executable = 1;
+    string file_name = 2;
+    uint32 start_line = 3;
+    uint32 end_line = 4;
+    string intermediate_prefix = 5;
+}
+
+message ServerMapReq {
+    string output_file = 1;
 }
 
 message KeyServers {
