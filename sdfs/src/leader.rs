@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use prost::Message;
 use rand::seq::{IteratorRandom, SliceRandom};
 use std::collections::{HashMap, VecDeque};
-use std::iter::{repeat, zip};
+use std::iter::{once, repeat, zip};
 use std::net::Ipv4Addr;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -212,35 +212,32 @@ impl FileTable {
             ));
         }
 
-        let mut active_vms = get_active_vms(members.clone()).await;
-        let target_vms: Vec<_> = active_vms
-            .choose_multiple(&mut rand::thread_rng(), 4)
-            .copied()
-            .collect();
-        if target_vms.is_empty() {
+        let active_vms = get_active_vms(members.clone()).await;
+        let Some(target_vm) = active_vms.choose(&mut rand::thread_rng()).copied() else {
             info!("Unable to pick a target VM");
             return;
-        }
+        };
 
+        let mut worker_vms = active_vms.clone();
         {
             let Some(executable_servers) = self.table.get(&red_req.executable) else {
                 info!("No executable found in the file system, abortin");
                 return;
             };
-            active_vms.retain(|vm| executable_servers.contains(vm));
-            active_vms.truncate(red_req.num_workers as usize);
+            worker_vms.retain(|vm| executable_servers.contains(vm));
+            worker_vms.truncate(red_req.num_workers as usize);
         }
 
         // send reduce requests to workers
         loop {
-            let active_vms_num = active_vms.len();
+            let worker_vms_num = worker_vms.len();
             let mut task_handlers = JoinSet::new();
             let mut reduce_results = Vec::new();
-            if active_vms.len() > file_server_map.len() {
-                for (vm, (key, file)) in zip(active_vms.into_iter(), file_server_map.into_iter()) {
+            if worker_vms.len() > file_server_map.len() {
+                for (vm, (key, file)) in zip(worker_vms.into_iter(), file_server_map.into_iter()) {
                     let command = LeaderReduceReq {
                         key_server_map: HashMap::from([(key, file)]),
-                        target_server: target_vms[0].to_string(),
+                        target_server: target_vm.to_string(),
                         output_file: red_req.output_file.clone(),
                         executable: red_req.executable.clone(),
                     };
@@ -248,12 +245,12 @@ impl FileTable {
                 }
             } else {
                 for (vm, key_file_chunk) in zip(
-                    active_vms.into_iter(),
-                    file_server_map.chunks(file_server_map.len() / active_vms_num),
+                    worker_vms.into_iter(),
+                    file_server_map.chunks(file_server_map.len() / worker_vms_num),
                 ) {
                     let command = LeaderReduceReq {
                         key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
-                        target_server: target_vms[0].to_string(),
+                        target_server: target_vm.to_string(),
                         output_file: red_req.output_file.clone(),
                         executable: red_req.executable.clone(),
                     };
@@ -274,7 +271,7 @@ impl FileTable {
                      }| (succ_worker, fail_blocks),
                 )
                 .unzip();
-            (active_vms, file_server_map) = (
+            (worker_vms, file_server_map) = (
                 succ_workers_iter.into_iter().flatten().collect(),
                 fail_blocks_iter.into_iter().flatten().collect(),
             );
@@ -284,14 +281,41 @@ impl FileTable {
         }
 
         // request end server replicate at 3 more server
-        let end_server = target_vms[0];
-        for vm in target_vms.iter().skip(1) {
-            let command = LeaderPutReq {
-                machine: vm.to_string(),
-                file_name: red_req.output_file.clone(),
-            };
-            send_leader_put_req(&end_server, command, &mut Vec::new(), vm, &mut Vec::new()).await;
+        let mut succ_receivers = Vec::new();
+        let mut fail_receivers = Vec::new();
+        let mut missing = 3;
+        loop {
+            let rep_servers: Vec<_> = active_vms
+                .iter()
+                .filter(|s| !succ_receivers.contains(s))
+                .choose_multiple(&mut rand::thread_rng(), missing);
+            for vm in rep_servers {
+                let command = LeaderPutReq {
+                    machine: vm.to_string(),
+                    file_name: red_req.output_file.clone(),
+                };
+                send_leader_put_req(
+                    &target_vm,
+                    command,
+                    &mut fail_receivers,
+                    vm,
+                    &mut succ_receivers,
+                )
+                .await;
+            }
+            if fail_receivers.is_empty() {
+                break;
+            }
+            missing = fail_receivers.len();
+            fail_receivers.clear();
         }
+
+        self.table.insert(
+            red_req.output_file,
+            once(target_vm)
+                .chain(succ_receivers.into_iter().copied())
+                .collect::<Vec<_>>(),
+        );
 
         // end request
         let ack_buffer = Ack {
