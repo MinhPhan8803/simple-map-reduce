@@ -1,3 +1,4 @@
+use crate::helpers::split_id_to_components;
 use crate::member_list::{failure_detection::Type, FailureDetection, Member, MemberList};
 use crate::node::Node;
 use prost::Message;
@@ -70,12 +71,9 @@ pub async fn sender(members: Arc<RwLock<Vec<Node>>>, sender_id: Arc<str>) {
                         continue;
                     };
                     let raw_id = elem.id();
-                    let Ok(id) = std::str::from_utf8(&raw_id) else {
+                    let Some((ip, port)) = split_id_to_components(&raw_id) else {
                         continue;
                     };
-                    let id_elems = id.split('_').collect::<Vec<_>>();
-                    let ip = id_elems[0];
-                    let port = id_elems[1];
                     info!("Starting to send to {}:{}", ip, port);
 
                     // Sending regular membership list message

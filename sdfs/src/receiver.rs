@@ -1,3 +1,4 @@
+use crate::helpers::split_id_to_components;
 use crate::member_list::{
     failure_detection::Type, Coordinator, Election, FailureDetection, MemberList, Ok,
 };
@@ -6,7 +7,6 @@ use bytes::Bytes;
 use chrono::{offset::Local, DateTime, FixedOffset};
 use futures::stream::{self, StreamExt};
 use prost::Message;
-use std::ops::Deref;
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
@@ -15,16 +15,6 @@ use tracing::{info, instrument, trace, warn};
 
 const TF_FAIL: Duration = Duration::from_millis(2200);
 const TF_CLEAN: Duration = Duration::from_millis(5000);
-
-fn split_id_to_components<T: Deref<Target = [u8]>>(raw_id: &T) -> Option<(&str, &str)> {
-    let Ok(id) = std::str::from_utf8(raw_id) else {
-        return None;
-    };
-    let id_elems = id.split('_').collect::<Vec<_>>();
-    let ip = id_elems[0];
-    let port = id_elems[1];
-    Some((ip, port))
-}
 
 struct LeaderElection {
     leader_ip: Arc<RwLock<String>>,

@@ -1,12 +1,12 @@
-use crate::helpers::{write_to_buf, client_get_helper};
+use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
-    LeaderStoreRes, LsRes, MapReq, MultiRead, MultiWrite, PutReq, ServerReduceReq,
+    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{fmt, process::Command, sync::Arc};
+use std::{collections::HashSet, fmt, process::Command, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
@@ -36,6 +36,37 @@ impl fmt::Display for LocalFileList {
         }
         write!(f, "")
     }
+}
+
+async fn put_from_server(file_name: String, ip: String) {
+    let get_req = GetReq {
+        file_name: file_name.clone(),
+    };
+    info!("Connecting to the other server {}", ip);
+    //Add server port 56552 to the end of the machine string
+    let machine = ip + ":56552";
+    info!("Connecting to the other server from server {}", machine);
+    let Ok(mut inter_server_stream) = TcpStream::connect(machine).await else {
+        warn!("Unable to connect to the other server");
+        return;
+    };
+
+    let req_buf = SdfsCommand {
+        r#type: Some(Type::PutReq(PutReq { file_name })),
+    }
+    .encode_to_vec();
+    let _ = inter_server_stream.write_all(&req_buf).await;
+    let mut res_buf = [0; 1024];
+    let Ok(n) = inter_server_stream.read(&mut res_buf).await else {
+        warn!("Failed to read ACK from the other server");
+        return;
+    };
+    if let Err(e) = Ack::decode(&res_buf[..n]) {
+        warn!("Unable to decode ACK message: {}", e);
+        return;
+    }
+
+    handle_get(get_req, inter_server_stream).await;
 }
 
 async fn handle_put(
@@ -75,36 +106,7 @@ async fn handle_put(
 
 async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) {
     info!("Handling leader PUT request at server");
-    let get_req = GetReq {
-        file_name: leader_put_req.file_name.clone(),
-    };
-    info!("Connecting to the other server {}", leader_put_req.machine);
-    //Add server port 56552 to the end of the machine string
-    let machine = leader_put_req.machine + ":56552";
-    info!("Connecting to the other server from server {}", machine);
-    let Ok(mut inter_server_stream) = TcpStream::connect(machine).await else {
-        warn!("Unable to connect to the other server");
-        return;
-    };
-
-    let req_buf = SdfsCommand {
-        r#type: Some(Type::PutReq(PutReq {
-            file_name: leader_put_req.file_name,
-        })),
-    }
-    .encode_to_vec();
-    let _ = inter_server_stream.write_all(&req_buf).await;
-    let mut res_buf = [0; 1024];
-    let Ok(n) = inter_server_stream.read(&mut res_buf).await else {
-        warn!("Failed to read ACK from the other server");
-        return;
-    };
-    if let Err(e) = Ack::decode(&res_buf[..n]) {
-        warn!("Unable to decode ACK message: {}", e);
-        return;
-    }
-
-    handle_get(get_req, inter_server_stream).await;
+    put_from_server(leader_put_req.file_name, leader_put_req.machine).await;
 
     info!("Server handled leader PUT successfully");
     let leader_ack = Ack {
@@ -316,54 +318,39 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // run executable and on the file from map_req.file_name
 
     // First, fetch the file from the SDFS server
-    let get_req = GetReq {
-        file_name: map_req.file_name.clone(),
-    };
-    let req_buf = SdfsCommand {
-        r#type: Some(Type::GetReq(get_req)),
-    }
-    .encode_to_vec();
-    let _ = leader_stream.write_all(&req_buf).await;
-    let mut res_buf = [0; 1024];
-    let n = leader_stream.read(&mut res_buf).await.unwrap();
-    if let Err(e) = Ack::decode(&res_buf[..n]) {
-        warn!("Unable to decode ACK message: {}", e);
-        return;
+    let mut files = Vec::new();
+    for (file, servers) in map_req.file_server_map.into_iter() {
+        if let Err(e) = client_get_helper(servers.servers, &file, &file).await {
+            error!("Unable to fetch file from server: {}, aborting", e);
+            continue;
+        }
+        files.push(file);
     }
 
-    // run the executable
-    if let Err(e) = Command::new(&map_req.executable)
-        .arg(&map_req.file_name)
-        .output()
-    {
-        error!("Unable to run executable: {}", e);
-        return;
+    // run the executable and collect keys
+    // assume executable output keys to terminal
+    let mut keys = HashSet::new();
+    for file in files {
+        let Ok(raw_output) = Command::new(&map_req.executable)
+            .args([&file, &map_req.output_prefix])
+            .output()
+        else {
+            continue;
+        };
+        let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
+            continue;
+        };
+        keys.extend(output.lines().map(|line| line.to_string()));
     }
 
     // PUT the output files to the target SDFS server
-    let prefix = map_req.intermediate_prefix.clone() + "/";
-    let mut paths = fs::read_dir(".").await.unwrap();
-    while let Some(res) = paths.next_entry().await.unwrap() {
-        let path = res.path();
-        if path.is_file() {
-            let file_name = path.file_name().unwrap().to_str().unwrap();
-            if file_name.starts_with(&prefix) {
-                let put_req = PutReq {
-                    file_name: file_name.to_string(),
-                };
-                let req_buf = SdfsCommand {
-                    r#type: Some(Type::PutReq(put_req)),
-                }
-                .encode_to_vec();
-                let _ = leader_stream.write_all(&req_buf).await;
-                let mut res_buf = [0; 1024];
-                let n = leader_stream.read(&mut res_buf).await.unwrap();
-                if let Err(e) = Ack::decode(&res_buf[..n]) {
-                    warn!("Unable to decode ACK message: {}", e);
-                    return;
-                }
-            }
-        }
+    for key in keys {
+        let file_name = FileKey::new(&map_req.output_prefix, &key);
+        stream::iter(&map_req.target_servers)
+            .for_each_concurrent(None, |server| async {
+                put_from_server(file_name.to_string(), server.to_string()).await;
+            })
+            .await;
     }
 
     // ack the leader
@@ -378,45 +365,26 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 #[instrument(name = "Server Reduce", level = "trace")]
 async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     // fetch files
-    for (key, servers) in red_req.key_server_map.iter() {
-        if let Err(e) = client_get_helper(servers.servers.clone(), key, key).await {
+    let mut files = Vec::new();
+    for (key, servers) in red_req.key_server_map.into_iter() {
+        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key).await {
             error!("Unable to fetch key file: {}", e);
             return;
         }
+        files.push(key);
     }
 
     // run executable and send to target server
-    for key in red_req.key_server_map.keys() {
-        if let Err(e) = Command::new(&red_req.executable).arg(key).output() {
+    for file in files {
+        if let Err(e) = Command::new(&red_req.executable)
+            .args([&file, &red_req.output_file])
+            .output()
+        {
             error!("Unable to run executable: {}", e);
             return;
         }
     }
-    let target_server_address = red_req.target_server + ":56552";
-    let Ok(mut target_server_stream) = TcpStream::connect(&target_server_address).await else {
-        warn!("Unable to contact target server, aborting");
-        return;
-    };
-    let get_req = GetReq {
-        file_name: red_req.output_file.clone(),
-    };
-    let req_buf = SdfsCommand {
-        r#type: Some(Type::ServerRedReq(ServerReduceReq {
-            output_file: red_req.output_file,
-        })),
-    }
-    .encode_to_vec();
-    let _ = target_server_stream.write_all(&req_buf).await;
-    let mut res_buf = [0; 1024];
-    let Ok(n) = target_server_stream.read(&mut res_buf).await else {
-        warn!("Failed to read ACK from the other server");
-        return;
-    };
-    if let Err(e) = Ack::decode(&res_buf[..n]) {
-        warn!("Unable to decode ACK message: {}", e);
-        return;
-    }
-    handle_get(get_req, target_server_stream).await;
+    put_from_server(red_req.output_file, red_req.target_server).await;
 
     // end request
     let leader_ack_buffer = Ack {

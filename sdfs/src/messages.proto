@@ -117,14 +117,17 @@ message LeaderReduceReq {
 
 message LeaderMapReq {
     string executable = 1;
-    string file_name = 2;
-    uint32 start_line = 3;
-    uint32 end_line = 4;
-    string intermediate_prefix = 5;
+    string output_prefix = 2;
+    map<string, KeyServers> file_server_map = 3;
+    repeated string target_servers = 4;
 }
 
 message ServerMapReq {
     string output_file = 1;
+}
+
+message ServerMapRes {
+    repeated string keys = 1;
 }
 
 message KeyServers {

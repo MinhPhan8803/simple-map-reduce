@@ -1,11 +1,36 @@
-use crate::message_types::{GetData, GetReq, sdfs_command::Type, SdfsCommand};
-use tokio::io::{AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
-use tokio::net::TcpStream;
+use crate::message_types::{sdfs_command::Type, GetData, GetReq, SdfsCommand};
 use prost::{length_delimiter_len, Message};
-use tracing::{error, warn, instrument, info};
+use std::ops::Deref;
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tracing::{error, info, instrument, warn};
 
-pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(buffer: &mut T, mut stream: TcpStream) {
+#[derive(Debug, Clone)]
+pub struct FileKey {
+    name: String,
+}
+
+impl FileKey {
+    pub fn new(file_prefix: &str, key: &str) -> FileKey {
+        FileKey {
+            name: format!("{file_prefix}_{key}"),
+        }
+    }
+}
+
+impl Deref for FileKey {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.name
+    }
+}
+
+pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
+    buffer: &mut T,
+    mut stream: TcpStream,
+) {
     let mut res_buffer: Vec<u8> = Vec::new();
     let mut remaining_buffer = [0; 5120];
     while let Ok(n) = stream.read(&mut remaining_buffer).await {
@@ -98,4 +123,14 @@ pub async fn client_get_helper(
         }
     }
     Err("Unable to successfully get file from any server".to_string())
+}
+
+pub fn split_id_to_components<T: Deref<Target = [u8]>>(raw_id: &T) -> Option<(&str, &str)> {
+    let Ok(id) = std::str::from_utf8(raw_id) else {
+        return None;
+    };
+    let id_elems = id.split('_').collect::<Vec<_>>();
+    let ip = id_elems[0];
+    let port = id_elems[1];
+    Some((ip, port))
 }

@@ -207,17 +207,26 @@ pub struct LeaderMapReq {
     #[prost(string, tag = "1")]
     pub executable: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub file_name: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "3")]
-    pub start_line: u32,
-    #[prost(uint32, tag = "4")]
-    pub end_line: u32,
+    pub output_prefix: ::prost::alloc::string::String,
+    #[prost(map = "string, message", tag = "3")]
+    pub file_server_map: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        KeyServers,
+    >,
+    #[prost(string, repeated, tag = "4")]
+    pub target_servers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerMapReq {
     #[prost(string, tag = "1")]
     pub output_file: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServerMapRes {
+    #[prost(string, repeated, tag = "1")]
+    pub keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

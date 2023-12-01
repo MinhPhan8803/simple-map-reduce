@@ -1,7 +1,8 @@
+use crate::helpers::FileKey;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
     Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LeaderStoreReq,
-    LeaderStoreRes, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand,
+    LeaderStoreRes, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand, ServerMapRes,
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -10,7 +11,6 @@ use rand::seq::{IteratorRandom, SliceRandom};
 use std::collections::{HashMap, VecDeque};
 use std::iter::{once, repeat, zip};
 use std::net::Ipv4Addr;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -19,27 +19,6 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
-
-#[derive(Debug, Clone)]
-struct FileKey {
-    name: String,
-}
-
-impl FileKey {
-    pub fn new(file_prefix: String, key: String) -> FileKey {
-        FileKey {
-            name: format!("{file_prefix}_{key}"),
-        }
-    }
-}
-
-impl Deref for FileKey {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.name
-    }
-}
 
 // Define the file table and queues
 #[derive(Debug)]
@@ -78,6 +57,12 @@ struct ReduceResult {
     fail_blocks: Vec<(String, KeyServers)>,
 }
 
+struct MapResult {
+    succ_worker: Option<Ipv4Addr>,
+    fail_blocks: Vec<(String, KeyServers)>,
+    keys: Vec<String>,
+}
+
 async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> ReduceResult {
     let succ = ReduceResult {
         succ_worker: Some(vm),
@@ -113,7 +98,17 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
     succ
 }
 
-async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) {
+async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
+    let mut succ = MapResult {
+        succ_worker: Some(vm),
+        fail_blocks: Vec::new(),
+        keys: Vec::new(),
+    };
+    let fail = MapResult {
+        succ_worker: None,
+        fail_blocks: command.file_server_map.clone().into_iter().collect(),
+        keys: Vec::new(),
+    };
     let message = SdfsCommand {
         r#type: Some(Type::LeaderMapReq(command)),
     }
@@ -123,20 +118,22 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) {
     info!("Sending new Map to server: {}", vm);
     let Ok(mut stream) = TcpStream::connect(&vm).await else {
         error!("Failed to contact map worker {}", vm);
-        return;
+        return fail;
     };
 
     let _ = stream.write_all(&message).await;
     let mut res = Vec::new();
     if let Err(e) = stream.read_to_end(&mut res).await {
         error!("Failed to get ack from map worker {}: {}", vm, e);
-        return;
+        return fail;
     }
-    if let Err(e) = Ack::decode(res.as_slice()) {
-        error!("Failed to decode ack from map worker {}: {}", vm, e);
-        return;
-    }
+    let Ok(res) = ServerMapRes::decode(res.as_slice()) else {
+        error!("Failed to decode ack from map worker {}", vm);
+        return fail;
+    };
     info!("Successfully executed map at worker {}", vm);
+    succ.keys = res.keys;
+    succ
 }
 
 async fn send_leader_put_req<'recv>(
@@ -204,59 +201,120 @@ impl FileTable {
         members: Arc<RwLock<Vec<Node>>>,
     ) {
         // Step 1: Find files with the prefix map_req.input_dir.concat("/") in the FileTable table
-        let prefix = map_req.input_dir.clone() + "/";
-        let key_files: Vec<String> = self
+        let prefix = match map_req.input_dir.as_bytes() {
+            [.., b'/'] => map_req.input_dir,
+            _ => map_req.input_dir + "/",
+        };
+        let mut file_server_map: Vec<_> = self
             .table
             .iter()
-            .map(|elem| elem.key().to_string())
-            .filter(|file| file.starts_with(&prefix))
+            .filter(|elem| elem.key().starts_with(&prefix))
+            .map(|elem| {
+                (
+                    elem.key().clone(),
+                    KeyServers {
+                        servers: elem
+                            .value()
+                            .clone()
+                            .into_iter()
+                            .map(|ip| ip.to_string())
+                            .collect(),
+                    },
+                )
+            })
             .collect();
 
         // Step 2: Find active workers containing the executable
-        let mut active_vms = get_active_vms(members.clone()).await;
+        let active_vms = get_active_vms(members.clone()).await;
         if active_vms.is_empty() {
             info!("Unable to pick a target VM");
             return;
         }
+        let target_vms: Vec<_> = active_vms
+            .choose_multiple(&mut rand::thread_rng(), 4)
+            .map(|ip| ip.to_string())
+            .collect();
+
+        let mut worker_vms = active_vms.clone();
         {
             let Some(executable_servers) = self.table.get(&map_req.executable) else {
                 info!("No executable found in the file system, abortin");
                 return;
             };
-            active_vms.retain(|vm| executable_servers.contains(vm));
-            active_vms.truncate(map_req.num_workers as usize);
+            worker_vms.retain(|vm| executable_servers.contains(vm));
+            worker_vms.truncate(map_req.num_workers as usize);
         }
 
         //TODO Find min of total active and number of workers
 
         // Step 3: Distribute files among workers
-        let num_files = key_files.len();
-        let num_workers = active_vms.len();
-        let files_per_worker = num_files / num_workers;
-        let mut file_chunks = key_files.chunks(files_per_worker);
-
-        let mut task_handlers = JoinSet::new();
-        for vm in active_vms.into_iter() {
-            if let Some(file_chunk) = file_chunks.next() {
-                for file in file_chunk {
+        let mut keys = Vec::new();
+        loop {
+            let num_workers = worker_vms.len();
+            let num_files = file_server_map.len();
+            let mut task_handlers = JoinSet::new();
+            let mut map_results = Vec::new();
+            if num_workers > num_files {
+                for (vm, (dir, server)) in zip(worker_vms.into_iter(), file_server_map.into_iter())
+                {
                     let command = LeaderMapReq {
-                        file_name: file.clone(),
-                        start_line: 0,
-                        end_line: 0,
                         executable: map_req.executable.clone(),
-                        intermediate_prefix: map_req.file_name_prefix.clone(),
+                        output_prefix: map_req.file_name_prefix.clone(),
+                        file_server_map: HashMap::from([(dir, server)]),
+                        target_servers: target_vms.clone(),
+                    };
+                    task_handlers.spawn(send_leader_map_req(vm, command));
+                }
+            } else {
+                for (vm, dir_file_chunk) in zip(
+                    worker_vms.into_iter(),
+                    file_server_map.chunks(num_files / num_workers),
+                ) {
+                    let command = LeaderMapReq {
+                        executable: map_req.executable.clone(),
+                        output_prefix: map_req.file_name_prefix.clone(),
+                        file_server_map: HashMap::from_iter(dir_file_chunk.to_vec()),
+                        target_servers: target_vms.clone(),
                     };
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }
             }
+            while let Some(join) = task_handlers.join_next().await {
+                if let Ok(res) = join {
+                    map_results.push(res);
+                }
+            }
+            let (succ_workers_iter, fail_keys_blocks_iter): (Vec<_>, Vec<_>) = map_results
+                .into_iter()
+                .map(
+                    |MapResult {
+                         succ_worker,
+                         fail_blocks,
+                         keys,
+                     }| (succ_worker, (fail_blocks, keys)),
+                )
+                .unzip();
+            let (fail_blocks_iter, keys_iter): (Vec<_>, Vec<_>) =
+                fail_keys_blocks_iter.into_iter().unzip();
+            (worker_vms, file_server_map) = (
+                succ_workers_iter.into_iter().flatten().collect(),
+                fail_blocks_iter.into_iter().flatten().collect(),
+            );
+            keys.extend(keys_iter.into_iter().flatten());
+            if file_server_map.is_empty() {
+                break;
+            }
         }
 
-        while let Some(_) = task_handlers.join_next().await {}
-
         // Step 4: Once successful, populate FileTable.keys with the key and the file name
-        // for file in key_files {
-        //     self.keys.insert(file.clone(), Vec::new());
-        // }
+        for key in keys {
+            self.keys
+                .entry(key.clone())
+                .and_modify(|file_keys| {
+                    file_keys.push(FileKey::new(&map_req.file_name_prefix, &key))
+                })
+                .or_insert(Vec::from([FileKey::new(&map_req.file_name_prefix, &key)]));
+        }
 
         // Step 5: Send a message to the client that the map is successful
         let ack_buffer = Ack {
