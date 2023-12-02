@@ -7,7 +7,7 @@ def map_words(input_files, output_prefix):
 
     # Open the input files
     for input_file in input_files:
-        with open(input_file, mode='r', errors='replace') as file:
+        with open('/home/sdfs/' + input_file, mode='r', errors='replace') as file:
             text = file.read()
 
         # Split text into words using regular expression
@@ -21,7 +21,7 @@ def map_words(input_files, output_prefix):
 
     # Create output files for each word
     for word, count in word_count.items():
-        with open(f'{output_prefix}_{word}', 'w') as file:
+        with open(f'/home/sdfs/{output_prefix}_{word}', 'w') as file:
             file.write(f'{word}\t{count}\n')
 
     for word in word_count.keys():

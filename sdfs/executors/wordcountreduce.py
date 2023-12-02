@@ -5,7 +5,7 @@ def reduce_words(input_files, destination_file):
     total_count = 0
 
     for input_file in input_files:
-        with open(input_file, 'r') as file:
+        with open('/home/sdfs/' + input_file, 'r') as file:
             lines = file.readlines()
 
         # Assume the format is 'word\tcount\n'
@@ -13,7 +13,7 @@ def reduce_words(input_files, destination_file):
         total_count += int(count)
 
     # Write the result to the destination file
-    with open(destination_file, 'w') as file:
+    with open('/home/sdfs/' + destination_file, 'w') as file:
         file.write(f'{word}\t{total_count}\n')
 
 if __name__ == "__main__":
