@@ -132,7 +132,10 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
         println!("Failed to decode ack from map worker {}", vm);
         return fail;
     };
-    println!("Successfully executed map at worker {} with keys {:?}", vm, res.keys);
+    println!(
+        "Successfully executed map at worker {} with keys {:?}",
+        vm, res.keys
+    );
     succ.keys = res.keys;
     succ
 }
