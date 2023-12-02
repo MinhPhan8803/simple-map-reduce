@@ -47,7 +47,10 @@ enum ServerPutFlavor {
 
 async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor) {
     let get_req = GetReq {
-        file_name: file_name.clone(),
+        file_name: match flavor {
+            ServerPutFlavor::Put => file_name.clone(),
+            ServerPutFlavor::Map | ServerPutFlavor::Reduce => format!("mrout/{file_name}"),
+        },
     };
     info!("Connecting to the other server {}", ip);
     //Add server port 56552 to the end of the machine string
@@ -400,6 +403,8 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
                 .await;
             })
             .await;
+        let path = format!("/home/sdfs/mrout/{file_name}");
+        let _ = fs::remove_file(path).await;
     }
 
     info!("Server map: successfully put files on target servers");
@@ -443,12 +448,15 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     info!("Finishing running executable");
 
     put_from_server(
-        red_req.output_file,
+        red_req.output_file.clone(),
         red_req.target_server,
         ServerPutFlavor::Reduce,
     )
     .await;
     info!("Finished PUT'ing");
+
+    let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
+    let _ = fs::remove_file(path).await;
 
     // end request
     let leader_ack_buffer = Ack {
@@ -603,31 +611,17 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                     }
                     Some(Type::ServerRedReq(req)) => {
                         let file_list = local_file_list.clone();
-                        let (Ok(local_addr), Ok(peer_addr)) =
-                            (stream.local_addr(), stream.peer_addr())
-                        else {
-                            continue;
-                        };
-                        if local_addr.ip() != peer_addr.ip() {
-                            tokio::spawn(async move {
-                                handle_server_map_reduce(stream, req.output_file, true, file_list)
-                                    .await;
-                            });
-                        }
+                        tokio::spawn(async move {
+                            handle_server_map_reduce(stream, req.output_file, true, file_list)
+                                .await;
+                        });
                     }
                     Some(Type::ServerMapReq(req)) => {
                         let file_list = local_file_list.clone();
-                        let (Ok(local_addr), Ok(peer_addr)) =
-                            (stream.local_addr(), stream.peer_addr())
-                        else {
-                            continue;
-                        };
-                        if local_addr.ip() != peer_addr.ip() {
-                            tokio::spawn(async move {
-                                handle_server_map_reduce(stream, req.output_file, false, file_list)
-                                    .await;
-                            });
-                        }
+                        tokio::spawn(async move {
+                            handle_server_map_reduce(stream, req.output_file, false, file_list)
+                                .await;
+                        });
                     }
                     _ => {
                         // Other types of commands are not handled here
