@@ -200,6 +200,7 @@ impl FileTable {
         mut socket: TcpStream,
         members: Arc<RwLock<Vec<Node>>>,
     ) {
+        println!("Processing map on leader");
         // Step 1: Find files with the prefix map_req.input_dir.concat("/") in the FileTable table
         let prefix = match map_req.input_dir.as_bytes() {
             [.., b'/'] => map_req.input_dir,
@@ -224,6 +225,8 @@ impl FileTable {
             })
             .collect();
 
+        println!("Found files matching prefix: {:?}", file_server_map);
+
         // Step 2: Find active workers containing the executable
         let active_vms = get_active_vms(members.clone()).await;
         if active_vms.is_empty() {
@@ -245,6 +248,7 @@ impl FileTable {
             worker_vms.truncate(map_req.num_workers as usize);
         }
 
+        println!("Found active workers: {:?}", worker_vms);
         //TODO Find min of total active and number of workers
 
         // Step 3: Distribute files among workers
@@ -305,6 +309,7 @@ impl FileTable {
                 break;
             }
         }
+        println!("Workers successfully ran map in workers");
 
         // Step 4: Once successful, populate FileTable.keys with the key and the file name
         for key in keys {
@@ -316,11 +321,15 @@ impl FileTable {
                 .or_insert(Vec::from([FileKey::new(&map_req.file_name_prefix, &key)]));
         }
 
+        println!("Put files in filetable");
+
         // Step 5: Send a message to the client that the map is successful
         let ack_buffer = Ack {
             message: "Map successful".to_string(),
         }
         .encode_to_vec();
+
+        println!("Sent ack to client");
 
         if let Err(e) = socket.write_all(&ack_buffer).await {
             warn!("Failed to send map ack to client: {:?}", e);

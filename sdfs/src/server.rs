@@ -334,18 +334,20 @@ async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: Multi
 
 #[instrument(name = "Server Map", level = "trace")]
 async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
+    println!("Processing map on server");
     // run executable and on the file from map_req.file_name
 
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
         if let Err(e) = client_get_helper(servers.servers, &file, &file).await {
-            error!("Unable to fetch file from server: {}, aborting", e);
+            println!("Unable to fetch file from server: {}, aborting", e);
             continue;
         }
         files.push(file);
     }
 
+    println!("Server map: Fetched files from servers");
     // run the executable and collect keys
     // assume executable output keys to terminal
     let Ok(raw_output) = Command::new("python3")
@@ -360,13 +362,16 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
         )
         .output()
     else {
+        println!("Server map: unable to run executable");
         return;
     };
     let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
+        println!("Server map: unable to parse keys");
         return;
     };
     let keys: Vec<_> = output.lines().map(|line| line.to_string()).collect();
 
+    println!("Server map: successfully ran executables");
     // PUT the output files to the target SDFS server
     for key in &keys {
         let file_name = FileKey::new(&map_req.output_prefix, key);
@@ -382,6 +387,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
             .await;
     }
 
+    println!("Server map: successfully put files on target servers");
     // ack the leader
     let leader_ack_buffer = ServerMapRes { keys }.encode_to_vec();
     let _ = leader_stream.write_all(&leader_ack_buffer).await;
@@ -433,8 +439,13 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     let _ = leader_stream.shutdown().await;
 }
 
-async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: String, is_reduce: bool, local_file_list: Arc<Mutex<LocalFileList>>,) {
-    info!("Handling server Reduce request");
+async fn handle_server_map_reduce(
+    mut server_stream: TcpStream,
+    output_file: String,
+    is_reduce: bool,
+    local_file_list: Arc<Mutex<LocalFileList>>,
+) {
+    println!("Handling server Reduce request");
     let ack_buffer = Ack {
         message: "Reduce acknowledged".to_string(),
     }
@@ -451,23 +462,26 @@ async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: Str
         .open(path)
         .await
     else {
-        error!("Unable to open file");
+        println!("Server M-R receiver: Unable to open file");
         return;
     };
     let mut file_lock = fd_lock::RwLock::new(file);
     let Ok(mut locked_file) = file_lock.write() else {
-        error!("Unable to acquire a file lock");
+        println!("Server M-R receiver: Unable to acquire a file lock");
         return;
     };
     if let Err(e) = locked_file.write_all(&data_buffer).await {
-        error!("Unable to append to file with error {}", e);
+        error!(
+            "Server M-R receiver: Unable to append to file with error {}",
+            e
+        );
         return;
     };
-    info!("Server wrote map-reduce data successfully");
+    println!("Server wrote map-reduce data successfully");
     if is_reduce {
         let mut file_list = local_file_list.lock().await;
         file_list.list_mut().push(output_file);
-        info!("Server handled client PUT successfully");
+        println!("Server handled client PUT successfully");
     }
 }
 
@@ -567,13 +581,15 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                     Some(Type::ServerRedReq(req)) => {
                         let file_list = local_file_list.clone();
                         tokio::task::spawn_blocking(move || async {
-                            handle_server_map_reduce(stream, req.output_file, true, file_list).await;
+                            handle_server_map_reduce(stream, req.output_file, true, file_list)
+                                .await;
                         });
                     }
                     Some(Type::ServerMapReq(req)) => {
                         let file_list = local_file_list.clone();
                         tokio::task::spawn_blocking(move || async {
-                            handle_server_map_reduce(stream, req.output_file, false, file_list).await;
+                            handle_server_map_reduce(stream, req.output_file, false, file_list)
+                                .await;
                         });
                     }
                     _ => {
