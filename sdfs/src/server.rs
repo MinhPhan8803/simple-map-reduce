@@ -433,7 +433,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     let _ = leader_stream.shutdown().await;
 }
 
-async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: String) {
+async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: String, is_reduce: bool, local_file_list: Arc<Mutex<LocalFileList>>,) {
     info!("Handling server Reduce request");
     let ack_buffer = Ack {
         message: "Reduce acknowledged".to_string(),
@@ -463,7 +463,12 @@ async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: Str
         error!("Unable to append to file with error {}", e);
         return;
     };
-    info!("Server wrote reduce data successfully");
+    info!("Server wrote map-reduce data successfully");
+    if is_reduce {
+        let mut file_list = local_file_list.lock().await;
+        file_list.list_mut().push(output_file);
+        info!("Server handled client PUT successfully");
+    }
 }
 
 #[instrument(name = "Server startup and listener", level = "trace")]
@@ -560,13 +565,15 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         });
                     }
                     Some(Type::ServerRedReq(req)) => {
+                        let file_list = local_file_list.clone();
                         tokio::task::spawn_blocking(move || async {
-                            handle_server_map_reduce(stream, req.output_file).await;
+                            handle_server_map_reduce(stream, req.output_file, true, file_list).await;
                         });
                     }
                     Some(Type::ServerMapReq(req)) => {
+                        let file_list = local_file_list.clone();
                         tokio::task::spawn_blocking(move || async {
-                            handle_server_map_reduce(stream, req.output_file).await;
+                            handle_server_map_reduce(stream, req.output_file, false, file_list).await;
                         });
                     }
                     _ => {
