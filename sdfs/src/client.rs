@@ -125,10 +125,10 @@ impl Client {
                 .filter_map(|(mut server, buffer)| async move {
                     match server.server_stream.write_all(buffer).await {
                         Ok(_) => Some(server),
-                        Err(_) => {
+                        Err(e) => {
                             warn!(
-                                "Unable to write to server {}, ignoring server",
-                                server.server_address
+                                "Unable to write to server {} with error {}, ignoring server",
+                                server.server_address, e
                             );
                             None
                         }
@@ -137,6 +137,11 @@ impl Client {
                 .collect()
                 .await;
             file_buf.fill(0);
+        }
+
+        if servers_in_prog.is_empty() {
+            println!("PUT failed because the filesystem is not responding");
+            return;
         }
 
         for server in &mut servers_in_prog {
