@@ -534,7 +534,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                     Ok(cmd) => cmd,
                     Err(e) => {
                         warn!("Failed to decode command: {}", e);
-                        return;
+                        continue;
                     }
                 };
 
