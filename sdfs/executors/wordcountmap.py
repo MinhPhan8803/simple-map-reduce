@@ -21,7 +21,7 @@ def map_words(input_files, output_prefix):
 
     # Create output files for each word
     for word, count in word_count.items():
-        with open(f'/home/sdfs/{output_prefix}_{word}', 'w') as file:
+        with open(f'/home/sdfs/mrout/{output_prefix}_{word}', 'w') as file:
             file.write(f'{word}\t{count}\n')
 
     for word in word_count.keys():

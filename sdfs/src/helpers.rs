@@ -27,6 +27,12 @@ impl Deref for FileKey {
     }
 }
 
+impl std::fmt::Display for FileKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
 pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     buffer: &mut T,
     mut stream: TcpStream,
