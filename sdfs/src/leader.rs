@@ -328,6 +328,18 @@ impl FileTable {
                     file_keys.push(FileKey::new(&map_req.file_name_prefix, &key))
                 })
                 .or_insert(Vec::from([FileKey::new(&map_req.file_name_prefix, &key)]));
+            let file_key = FileKey::new(&map_req.file_name_prefix, &key);
+            self.table
+                .entry(file_key.to_string())
+                .and_modify(|servers| {
+                    servers.extend(target_vms.iter().map(|ip| ip.parse::<Ipv4Addr>().unwrap()))
+                })
+                .or_insert(
+                    target_vms
+                        .iter()
+                        .map(|ip| ip.parse::<Ipv4Addr>().unwrap())
+                        .collect(),
+                );
         }
 
         println!("Put files in filetable");
