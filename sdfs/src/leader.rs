@@ -64,6 +64,7 @@ struct MapResult {
 }
 
 async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> ReduceResult {
+    info!("Leader reduce: Starting reduce task");
     let succ = ReduceResult {
         succ_worker: Some(vm),
         fail_blocks: Vec::new(),
@@ -78,7 +79,7 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
     .encode_to_vec();
     //Append server port to sender
     let vm = vm.to_string() + ":56552";
-    info!("Sending new Reduce to server: {}", vm);
+    info!("Leader reduce: Sending new Reduce to server: {}", vm);
     let Ok(mut stream) = TcpStream::connect(&vm).await else {
         error!("Failed to contact reduce worker {}", vm);
         return fail;
@@ -87,19 +88,28 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
     let _ = stream.write_all(&message).await;
     let mut res = Vec::new();
     if let Err(e) = stream.read_to_end(&mut res).await {
-        error!("Failed to get ack from reduce worker {}: {}", vm, e);
+        error!(
+            "Leader reduce: Failed to get ack from reduce worker {}: {}",
+            vm, e
+        );
         return fail;
     }
     if let Err(e) = Ack::decode(res.as_slice()) {
-        error!("Failed to decode ack from reduce worker {}: {}", vm, e);
+        error!(
+            "Leader reduce: Failed to decode ack from reduce worker {}: {}",
+            vm, e
+        );
         return fail;
     }
-    info!("Successfully executed reduce at worker {}", vm);
+    info!(
+        "Leader reduce: Successfully executed reduce at worker {}",
+        vm
+    );
     succ
 }
 
 async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
-    println!("Starting map task");
+    info!("Leader map: Starting map task");
     let mut succ = MapResult {
         succ_worker: Some(vm),
         fail_blocks: Vec::new(),
@@ -116,24 +126,27 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
     .encode_to_vec();
     //Append server port to sender
     let vm = vm.to_string() + ":56552";
-    println!("Sending new Map to server: {}", vm);
+    info!("Leader map: Sending new Map to server: {}", vm);
     let Ok(mut stream) = TcpStream::connect(&vm).await else {
-        println!("Failed to contact map worker {}", vm);
+        warn!("Leader map: Failed to contact map worker {}", vm);
         return fail;
     };
 
     let _ = stream.write_all(&message).await;
     let mut res = Vec::new();
     if let Err(e) = stream.read_to_end(&mut res).await {
-        println!("Failed to get ack from map worker {}: {}", vm, e);
+        warn!(
+            "Leader map: Failed to get ack from map worker {}: {}",
+            vm, e
+        );
         return fail;
     }
     let Ok(res) = ServerMapRes::decode(res.as_slice()) else {
-        println!("Failed to decode ack from map worker {}", vm);
+        warn!("Leader map: Failed to decode ack from map worker {}", vm);
         return fail;
     };
-    println!(
-        "Successfully executed map at worker {} with keys {:?}",
+    info!(
+        "Leader map: Successfully executed map at worker {} with keys {:?}",
         vm, res.keys
     );
     succ.keys = res.keys;
@@ -204,13 +217,13 @@ impl FileTable {
         mut socket: TcpStream,
         members: Arc<RwLock<Vec<Node>>>,
     ) {
-        println!("Processing map on leader");
+        info!("Leader map: Processing map on leader");
         // Step 1: Find files with the prefix map_req.input_dir.concat("|") in the FileTable table
         let prefix = match map_req.input_dir.as_bytes() {
             [.., b'|'] => map_req.input_dir,
             _ => map_req.input_dir + "|",
         };
-        println!("Looking for prefix: {}", prefix);
+        info!("Leader map: Looking for prefix: {}", prefix);
         let mut file_server_map: Vec<_> = self
             .table
             .iter()
@@ -230,12 +243,15 @@ impl FileTable {
             })
             .collect();
 
-        println!("Found files matching prefix: {:?}", file_server_map);
+        info!(
+            "Leader map: Found files matching prefix: {:?}",
+            file_server_map
+        );
 
         // Step 2: Find active workers containing the executable
         let active_vms = get_active_vms(members.clone()).await;
         if active_vms.is_empty() {
-            info!("Unable to pick a target VM");
+            warn!("Leader map: Unable to pick a target VM");
             return;
         }
         let target_vms: Vec<_> = active_vms
@@ -246,26 +262,26 @@ impl FileTable {
         let mut worker_vms = active_vms.clone();
         {
             let Some(executable_servers) = self.table.get(&map_req.executable) else {
-                info!("No executable found in the file system, abortin");
+                warn!("Leader map: No executable found in the file system, aborting");
                 return;
             };
             worker_vms.retain(|vm| executable_servers.contains(vm));
             worker_vms.truncate(map_req.num_workers as usize);
         }
 
-        println!("Found active workers: {:?}", worker_vms);
+        info!("Leader map: Found active workers: {:?}", worker_vms);
         //TODO Find min of total active and number of workers
 
         // Step 3: Distribute files among workers
         let mut keys = Vec::new();
         loop {
-            println!("Initiating map at workers");
+            info!("Leader map: Initiating map at workers");
             let num_workers = worker_vms.len();
             let num_files = file_server_map.len();
             let mut task_handlers = JoinSet::new();
             let mut map_results = Vec::new();
             if num_workers > num_files {
-                println!("More workers than files");
+                info!("Leader map: More workers than files");
                 for (vm, (dir, server)) in zip(worker_vms.into_iter(), file_server_map.into_iter())
                 {
                     let command = LeaderMapReq {
@@ -277,7 +293,7 @@ impl FileTable {
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }
             } else {
-                println!("Fewer workers than files");
+                info!("Leader map: Fewer workers than files");
                 for (vm, dir_file_chunk) in zip(
                     worker_vms.into_iter(),
                     file_server_map.chunks(num_files / num_workers),
@@ -296,7 +312,7 @@ impl FileTable {
                     map_results.push(res);
                 }
             }
-            println!("Joined map tasks");
+            info!("Leader map: Joined map tasks");
             let (succ_workers_iter, fail_keys_blocks_iter): (Vec<_>, Vec<_>) = map_results
                 .into_iter()
                 .map(
@@ -318,7 +334,7 @@ impl FileTable {
                 break;
             }
         }
-        println!("Workers successfully ran map in workers");
+        info!("Leader map: Workers successfully ran map in workers");
 
         // Step 4: Once successful, populate FileTable.keys with the key and the file name
         for key in keys {
@@ -337,7 +353,7 @@ impl FileTable {
             );
         }
 
-        println!("Put files in filetable");
+        info!("Leader map: Put files in filetable");
 
         // Step 5: Send a message to the client that the map is successful
         let ack_buffer = Ack {
@@ -345,10 +361,10 @@ impl FileTable {
         }
         .encode_to_vec();
 
-        println!("Sent ack to client");
+        info!("Leader map: Sent ack to client");
 
         if let Err(e) = socket.write_all(&ack_buffer).await {
-            warn!("Failed to send map ack to client: {:?}", e);
+            warn!("Leader map: Failed to send map ack to client: {:?}", e);
         }
     }
 
@@ -361,6 +377,7 @@ impl FileTable {
         mut socket: TcpStream,
         members: Arc<RwLock<Vec<Node>>>,
     ) {
+        info!("Leader reduce: starting reduce on leader");
         // fetch active workers containing executable
         let key_file_map = self.keys.clone();
         key_file_map.retain(|_, v| {
@@ -393,7 +410,7 @@ impl FileTable {
 
         let active_vms = get_active_vms(members.clone()).await;
         let Some(target_vm) = active_vms.choose(&mut rand::thread_rng()).copied() else {
-            info!("Unable to pick a target VM");
+            warn!("Unable to pick a target VM");
             return;
         };
 
@@ -407,12 +424,19 @@ impl FileTable {
             worker_vms.truncate(red_req.num_workers as usize);
         }
 
+        info!(
+            "Leader reduce: found servers with executables: {:?}",
+            worker_vms
+        );
+
         // send reduce requests to workers
         loop {
+            info!("Leader reduce: sending reduce requests to workers");
             let worker_vms_num = worker_vms.len();
             let mut task_handlers = JoinSet::new();
             let mut reduce_results = Vec::new();
             if worker_vms.len() > file_server_map.len() {
+                info!("Leader reduce: more workers than files");
                 for (vm, (key, file)) in zip(worker_vms.into_iter(), file_server_map.into_iter()) {
                     let command = LeaderReduceReq {
                         key_server_map: HashMap::from([(key, file)]),
@@ -423,6 +447,7 @@ impl FileTable {
                     task_handlers.spawn(send_leader_reduce_req(vm, command));
                 }
             } else {
+                info!("Leader reduce: fewer workers than files");
                 for (vm, key_file_chunk) in zip(
                     worker_vms.into_iter(),
                     file_server_map.chunks(file_server_map.len() / worker_vms_num),
@@ -458,6 +483,7 @@ impl FileTable {
                 break;
             }
         }
+        info!("Leader reduce: sent reduce requests");
 
         // request end server replicate at 3 more server
         let mut succ_receivers = Vec::new();
@@ -488,6 +514,8 @@ impl FileTable {
             missing = fail_receivers.len();
             fail_receivers.clear();
         }
+
+        info!("Leader reduce: replicated output file");
 
         self.table.insert(
             red_req.output_file,

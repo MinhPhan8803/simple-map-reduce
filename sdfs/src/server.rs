@@ -411,6 +411,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
 #[instrument(name = "Server Reduce", level = "trace")]
 async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
+    info!("Server reduce: Processing reduce on server");
     // fetch files
     let mut files = Vec::new();
     for (key, servers) in red_req.key_server_map.into_iter() {
@@ -420,6 +421,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         }
         files.push(key);
     }
+    info!("Finished fetching files");
 
     // run executable and send to target server
     if let Err(e) = tokio::task::block_in_place(|| {
@@ -438,6 +440,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         error!("Unable to run executable: {}", e);
         return;
     }
+    info!("Finishing running executable");
 
     put_from_server(
         red_req.output_file,
@@ -445,6 +448,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         ServerPutFlavor::Reduce,
     )
     .await;
+    info!("Finished PUT'ing");
 
     // end request
     let leader_ack_buffer = Ack {
