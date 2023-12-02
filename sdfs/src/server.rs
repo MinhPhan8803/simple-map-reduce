@@ -340,7 +340,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
-        let sdfs_file = format!("/home/sdfs/{file}");
+        let sdfs_file = format!("\'/home/sdfs/{file}\'");
         if let Err(e) = client_get_helper(servers.servers, &file, &sdfs_file).await {
             warn!(
                 "Server map: Unable to fetch file from server: {}, aborting",
