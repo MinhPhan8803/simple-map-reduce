@@ -204,7 +204,7 @@ impl FileTable {
         println!("Processing map on leader");
         // Step 1: Find files with the prefix map_req.input_dir.concat("|") in the FileTable table
         let prefix = match map_req.input_dir.as_bytes() {
-            [.., b'/'] => map_req.input_dir,
+            [.., b'|'] => map_req.input_dir,
             _ => map_req.input_dir + "|",
         };
         println!("Looking for prefix: {}", prefix);
