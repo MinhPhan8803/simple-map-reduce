@@ -99,6 +99,7 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
 }
 
 async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
+    println!("Starting map task");
     let mut succ = MapResult {
         succ_worker: Some(vm),
         fail_blocks: Vec::new(),
@@ -115,23 +116,23 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
     .encode_to_vec();
     //Append server port to sender
     let vm = vm.to_string() + ":56552";
-    info!("Sending new Map to server: {}", vm);
+    println!("Sending new Map to server: {}", vm);
     let Ok(mut stream) = TcpStream::connect(&vm).await else {
-        error!("Failed to contact map worker {}", vm);
+        println!("Failed to contact map worker {}", vm);
         return fail;
     };
 
     let _ = stream.write_all(&message).await;
     let mut res = Vec::new();
     if let Err(e) = stream.read_to_end(&mut res).await {
-        error!("Failed to get ack from map worker {}: {}", vm, e);
+        println!("Failed to get ack from map worker {}: {}", vm, e);
         return fail;
     }
     let Ok(res) = ServerMapRes::decode(res.as_slice()) else {
-        error!("Failed to decode ack from map worker {}", vm);
+        println!("Failed to decode ack from map worker {}", vm);
         return fail;
     };
-    info!("Successfully executed map at worker {}", vm);
+    println!("Successfully executed map at worker {}", vm);
     succ.keys = res.keys;
     succ
 }
@@ -201,11 +202,12 @@ impl FileTable {
         members: Arc<RwLock<Vec<Node>>>,
     ) {
         println!("Processing map on leader");
-        // Step 1: Find files with the prefix map_req.input_dir.concat("/") in the FileTable table
+        // Step 1: Find files with the prefix map_req.input_dir.concat("|") in the FileTable table
         let prefix = match map_req.input_dir.as_bytes() {
             [.., b'/'] => map_req.input_dir,
-            _ => map_req.input_dir + "/",
+            _ => map_req.input_dir + "|",
         };
+        println!("Looking for prefix: {}", prefix);
         let mut file_server_map: Vec<_> = self
             .table
             .iter()
@@ -254,11 +256,13 @@ impl FileTable {
         // Step 3: Distribute files among workers
         let mut keys = Vec::new();
         loop {
+            println!("Initiating map at workers");
             let num_workers = worker_vms.len();
             let num_files = file_server_map.len();
             let mut task_handlers = JoinSet::new();
             let mut map_results = Vec::new();
             if num_workers > num_files {
+                println!("More workers than files");
                 for (vm, (dir, server)) in zip(worker_vms.into_iter(), file_server_map.into_iter())
                 {
                     let command = LeaderMapReq {
@@ -270,6 +274,7 @@ impl FileTable {
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }
             } else {
+                println!("Fewer workers than files");
                 for (vm, dir_file_chunk) in zip(
                     worker_vms.into_iter(),
                     file_server_map.chunks(num_files / num_workers),
@@ -288,6 +293,7 @@ impl FileTable {
                     map_results.push(res);
                 }
             }
+            println!("Joined map tasks");
             let (succ_workers_iter, fail_keys_blocks_iter): (Vec<_>, Vec<_>) = map_results
                 .into_iter()
                 .map(
