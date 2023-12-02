@@ -458,7 +458,7 @@ async fn handle_server_map_reduce(
     is_reduce: bool,
     local_file_list: Arc<Mutex<LocalFileList>>,
 ) {
-    println!("Handling server Reduce request");
+    info!("Server M-R: Reading operation results");
     let ack_buffer = Ack {
         message: "Reduce acknowledged".to_string(),
     }
@@ -475,14 +475,14 @@ async fn handle_server_map_reduce(
         .open(path)
         .await
     else {
-        println!("Server M-R receiver: Unable to open file");
+        warn!("Server M-R receiver: Unable to open file");
         return;
     };
 
     let mut file_lock = fd_lock::RwLock::new(file);
 
     let Ok(mut locked_file) = tokio::task::block_in_place(|| file_lock.write()) else {
-        println!("Server M-R receiver: Unable to acquire a file lock");
+        error!("Server M-R receiver: Unable to acquire a file lock");
         return;
     };
     if let Err(e) = locked_file.write_all(&data_buffer).await {
@@ -492,11 +492,10 @@ async fn handle_server_map_reduce(
         );
         return;
     };
-    println!("Server wrote map-reduce data successfully");
+    info!("Server wrote map-reduce data successfully");
     if is_reduce {
         let mut file_list = local_file_list.lock().await;
         file_list.list_mut().push(output_file);
-        println!("Server handled client PUT successfully");
     }
 }
 
