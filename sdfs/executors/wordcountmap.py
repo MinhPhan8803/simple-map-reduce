@@ -7,7 +7,7 @@ def map_words(input_files, output_prefix):
 
     # Open the input files
     for input_file in input_files:
-        with open(input_file, 'r') as file:
+        with open(input_file, mode='r', errors='replace') as file:
             text = file.read()
 
         # Split text into words using regular expression
