@@ -43,6 +43,7 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     if let Some((start_line, end_line)) = line_range {
         let mut line_count = 0;
         while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+            info!("Read from stream with size: {}", size);
             if size == 0 {
                 break;
             }

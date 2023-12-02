@@ -110,6 +110,7 @@ impl Client {
         let mut file_buf = String::new();
         let mut buf_reader = BufReader::new(file);
         while let Ok(size) = buf_reader.read_line(&mut file_buf).await {
+            info!("Put read file with size: {size}");
             if size == 0 {
                 break;
             }
