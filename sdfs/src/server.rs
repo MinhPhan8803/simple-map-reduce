@@ -550,12 +550,12 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         });
                     }
                     Some(Type::LeaderMapReq(map_req)) => {
-                        tokio::spawn(async move {
+                        tokio::task::spawn_blocking(move || async {
                             handle_map(stream, map_req).await;
                         });
                     }
                     Some(Type::LeaderRedReq(red_req)) => {
-                        tokio::spawn(async move {
+                        tokio::task::spawn_blocking(move || async {
                             handle_reduce(stream, red_req).await;
                         });
                     }

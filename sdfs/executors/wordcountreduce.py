@@ -2,13 +2,15 @@ import sys
 
 def reduce_words(input_files, destination_file):
     # Read the input file
+    total_count = 0
+
     for input_file in input_files:
         with open(input_file, 'r') as file:
             lines = file.readlines()
 
         # Assume the format is 'word\tcount\n'
         word, count = lines[0].strip().split('\t')
-        total_count = int(count)
+        total_count += int(count)
 
     # Write the result to the destination file
     with open(destination_file, 'w') as file:
