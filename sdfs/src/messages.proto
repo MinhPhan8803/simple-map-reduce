@@ -4,9 +4,7 @@ package message_types;
 message SDFSCommand {
     oneof type {
         PutReq put_req = 1;
-        PutData put_data = 2;
         GetReq get_req = 3;
-        GetData get_data = 4;
         Delete del = 5;
         LsReq ls_req = 6;
         LsRes ls_res = 7;
@@ -21,6 +19,7 @@ message SDFSCommand {
         ReduceReq red_req = 16;
         LeaderMapReq leader_map_req = 17;
         ServerMapReq server_map_req = 18;
+        FileSizeReq file_size_req = 19;
         LeaderReduceReq leader_red_req = 20;
         ServerReduceReq server_red_req = 21;
     }
@@ -30,13 +29,6 @@ message PutReq {
     string file_name = 1;
 }
 
-message PutData {
-    string machine = 1;
-    string file_name = 2;
-    uint64 offset = 3;
-    bytes data = 4;
-}
-
 message LeaderPutReq {
     string machine = 1;
     string file_name = 2;
@@ -44,13 +36,6 @@ message LeaderPutReq {
 
 message GetReq {
     string file_name = 1;
-}
-
-message GetData {
-    string machine = 1;
-    string file_name = 2;
-    uint64 offset = 3;
-    bytes data = 4;
 }
 
 message Delete {
@@ -120,6 +105,8 @@ message LeaderMapReq {
     string output_prefix = 2;
     map<string, KeyServers> file_server_map = 3;
     repeated string target_servers = 4;
+    uint32 start_line = 5;
+    uint32 end_line = 6;
 }
 
 message ServerMapReq {
@@ -136,4 +123,12 @@ message KeyServers {
 
 message ServerReduceReq {
     string output_file = 1;
+}
+
+message FileSizeReq {
+    string file_name = 1;
+}
+
+message FileSizeRes {
+    uint32 size = 1;
 }

@@ -1,7 +1,7 @@
 use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
+    Ack, Delete, Fail, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
     LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes,
     ServerReduceReq,
 };
@@ -148,13 +148,6 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
         return;
     };
     let mut file_buf = [0; 4096];
-    let mut file_offset = 0;
-    let mut mesg = GetData {
-        machine: "".to_string(),
-        file_name: get_req.file_name,
-        offset: 0,
-        data: Vec::new(),
-    };
 
     info!("Server beginning send");
     while let Ok(read_size) = file.read(&mut file_buf).await {
@@ -162,17 +155,11 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
             break;
         }
         //println!("Server sending with size {}", read_size);
-        let send_buffer = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
-        //println!("Server send buffer: {:?}", &send_buffer);
-        mesg.offset = file_offset as u64;
-        mesg.data = send_buffer;
-        let mesg_buffer = mesg.encode_length_delimited_to_vec();
-        //println!("Server mesg buffer: {:?}", mesg_buffer);
-        if let Err(e) = stream.write_all(&mesg_buffer).await {
+        let send_buffer: Vec<_> = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
+        if let Err(e) = stream.write_all(&send_buffer).await {
             warn!("Unable to write to client {}", e);
         }
         //println!("Server finished sending");
-        file_offset += read_size;
         file_buf.fill(0);
     }
     info!("Server handled GET request successfully");

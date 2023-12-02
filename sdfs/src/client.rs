@@ -1,7 +1,7 @@
 use crate::helpers::client_get_helper;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, Fail, GetReq, LsReq, LsRes, MapReq, MultiRead, MultiWrite, PutData, PutReq,
+    Ack, Delete, Fail, GetReq, LsReq, LsRes, MapReq, MultiRead, MultiWrite, PutReq,
     ReduceReq, SdfsCommand,
 };
 use futures::stream::{self, StreamExt};
@@ -108,32 +108,20 @@ impl Client {
         }
 
         let mut file_buf = [0; 4096];
-        let mut file_offset = 0;
-        let mut mesg = PutData {
-            machine: "".to_string(),
-            file_name: sdfs_file_name.to_string(),
-            offset: 0,
-            data: Vec::new(),
-        };
 
         while let Ok(read_size) = file.read(&mut file_buf).await {
             if read_size == 0 {
                 break;
             }
 
-            let send_buffer = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
+            let send_buffer: Vec<_> = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
             //println!("Send buffer: {:?}", send_buffer);
             //println!("File buf: {:?}", file_buf);
 
-            mesg.offset = file_offset as u64;
-            mesg.data = send_buffer;
-
-            let mesg_buffer = mesg.encode_length_delimited_to_vec();
-
-            let mesg_buffer_references = stream::repeat(&mesg_buffer);
+            let send_buffer_references = stream::repeat(&send_buffer);
 
             servers_in_prog = stream::iter(servers_in_prog)
-                .zip(mesg_buffer_references)
+                .zip(send_buffer_references)
                 .filter_map(|(mut server, buffer)| async move {
                     match server.server_stream.write_all(buffer).await {
                         Ok(_) => Some(server),
@@ -148,8 +136,6 @@ impl Client {
                 })
                 .collect()
                 .await;
-
-            file_offset += read_size;
             file_buf.fill(0);
         }
 
