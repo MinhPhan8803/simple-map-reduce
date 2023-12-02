@@ -340,15 +340,14 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
-        let sdfs_file = format!("\'{file}\'");
-        if let Err(e) = client_get_helper(servers.servers, &file, &sdfs_file).await {
+        if let Err(e) = client_get_helper(servers.servers, &file, &file).await {
             warn!(
                 "Server map: Unable to fetch file from server: {}, aborting",
                 e
             );
             continue;
         }
-        files.push(sdfs_file);
+        files.push(file);
     }
 
     info!("Server map: Fetched files from servers");
@@ -415,12 +414,11 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     // fetch files
     let mut files = Vec::new();
     for (key, servers) in red_req.key_server_map.into_iter() {
-        let sdfs_key = format!("\'{key}\'");
-        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &sdfs_key).await {
+        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key).await {
             error!("Unable to fetch key file: {}", e);
             return;
         }
-        files.push(sdfs_key);
+        files.push(key);
     }
 
     // run executable and send to target server
