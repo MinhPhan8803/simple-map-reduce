@@ -112,7 +112,10 @@ impl Client {
 
         loop {
             match buf_reader.read_line(&mut file_buf).await {
-                Err(_) => continue,
+                Err(_) => {
+                    file_buf.clear();
+                    continue;
+                }
                 Ok(0) => break,
                 Ok(size) => {
                     info!("Put read file with size: {size}");
