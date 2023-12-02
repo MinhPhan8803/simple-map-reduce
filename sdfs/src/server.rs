@@ -590,28 +590,44 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         });
                     }
                     Some(Type::LeaderMapReq(map_req)) => {
+                        info!("Received Map request from the leader");
                         tokio::spawn(async move {
                             handle_map(stream, map_req).await;
                         });
                     }
                     Some(Type::LeaderRedReq(red_req)) => {
+                        info!("Received Reduce request from the leader");
                         tokio::spawn(async move {
                             handle_reduce(stream, red_req).await;
                         });
                     }
                     Some(Type::ServerRedReq(req)) => {
                         let file_list = local_file_list.clone();
-                        tokio::spawn(async move {
-                            handle_server_map_reduce(stream, req.output_file, true, file_list)
-                                .await;
-                        });
+                        let (Ok(local_addr), Ok(peer_addr)) =
+                            (stream.local_addr(), stream.peer_addr())
+                        else {
+                            continue;
+                        };
+                        if local_addr != peer_addr {
+                            tokio::spawn(async move {
+                                handle_server_map_reduce(stream, req.output_file, true, file_list)
+                                    .await;
+                            });
+                        }
                     }
                     Some(Type::ServerMapReq(req)) => {
                         let file_list = local_file_list.clone();
-                        tokio::spawn(async move {
-                            handle_server_map_reduce(stream, req.output_file, false, file_list)
-                                .await;
-                        });
+                        let (Ok(local_addr), Ok(peer_addr)) =
+                            (stream.local_addr(), stream.peer_addr())
+                        else {
+                            continue;
+                        };
+                        if local_addr != peer_addr {
+                            tokio::spawn(async move {
+                                handle_server_map_reduce(stream, req.output_file, false, file_list)
+                                    .await;
+                            });
+                        }
                     }
                     _ => {
                         // Other types of commands are not handled here
