@@ -1,13 +1,13 @@
 use crate::helpers::client_get_helper;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, Fail, GetReq, LsReq, LsRes, MapReq, MultiRead, MultiWrite, PutReq,
-    ReduceReq, SdfsCommand,
+    Ack, Delete, Fail, GetReq, LsReq, LsRes, MapReq, MultiRead, MultiWrite, PutReq, ReduceReq,
+    SdfsCommand,
 };
 use futures::stream::{self, StreamExt};
 use prost::Message;
 use std::{sync::Arc, time::Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::{fs, net::TcpStream, sync::RwLock};
 use tracing::{error, info, instrument, warn};
 
@@ -31,7 +31,7 @@ impl Client {
         info!("Starting PUT at client to file: {}", sdfs_file_name);
         let start_time = Instant::now();
         // Read the local file
-        let Ok(mut file) = fs::File::open(local_file_name).await else {
+        let Ok(file) = fs::File::open(local_file_name).await else {
             println!("Unable to open file");
             warn!("Unable to open file");
             return;
@@ -107,23 +107,19 @@ impl Client {
             });
         }
 
-        let mut file_buf = [0; 4096];
-
-        while let Ok(read_size) = file.read(&mut file_buf).await {
-            if read_size == 0 {
+        let mut file_buf = String::new();
+        let mut buf_reader = BufReader::new(file);
+        while let Ok(size) = buf_reader.read_line(&mut file_buf).await {
+            if size == 0 {
                 break;
             }
 
-            let send_buffer: Vec<_> = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
-            //println!("Send buffer: {:?}", send_buffer);
-            //println!("File buf: {:?}", file_buf);
-
-            let send_buffer_references = stream::repeat(&send_buffer);
+            let send_buffer_references = stream::repeat(&file_buf);
 
             servers_in_prog = stream::iter(servers_in_prog)
                 .zip(send_buffer_references)
                 .filter_map(|(mut server, buffer)| async move {
-                    match server.server_stream.write_all(buffer).await {
+                    match server.server_stream.write_all(buffer.as_bytes()).await {
                         Ok(_) => Some(server),
                         Err(e) => {
                             warn!(
@@ -136,7 +132,8 @@ impl Client {
                 })
                 .collect()
                 .await;
-            file_buf.fill(0);
+
+            file_buf.clear();
         }
 
         if servers_in_prog.is_empty() {
@@ -212,7 +209,8 @@ impl Client {
         // Use the list of replicas from the leader's response to fetch the file from one of the replicas.
         // For simplicity, we'll just use the first replica. In real-world scenarios, you might want to add
         // fault tolerance here by trying the next replica if one fails.
-        match client_get_helper(machine_list.machines, sdfs_file_name, local_file_name, None).await {
+        match client_get_helper(machine_list.machines, sdfs_file_name, local_file_name, None).await
+        {
             Ok(_) => {
                 let ack_buffer = Ack {
                     message: "File getting completed successfully".to_string(),

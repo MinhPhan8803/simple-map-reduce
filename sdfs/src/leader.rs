@@ -1,8 +1,8 @@
 use crate::helpers::FileKey;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LsRes, MapReq,
-    PutReq, ReduceReq, SdfsCommand, ServerMapRes, FileSizeReq, FileSizeRes
+    Ack, Delete, FileSizeReq, FileSizeRes, GetReq, KeyServers, LeaderMapReq, LeaderPutReq,
+    LeaderReduceReq, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand, ServerMapRes,
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -271,15 +271,15 @@ impl FileTable {
         }
 
         info!("Leader map: Found active workers: {:?}", worker_vms);
-        
+
         // get file count
         let message = SdfsCommand {
-            r#type: Some(Type::FileSizeReq(FileSizeReq{
+            r#type: Some(Type::FileSizeReq(FileSizeReq {
                 file_name: file_server_map[0].0.clone(),
             })),
         }
         .encode_to_vec();
-        
+
         let mut file_size = None;
         for server in &file_server_map[0].1.servers {
             let res = async {
@@ -288,7 +288,7 @@ impl FileTable {
                     warn!("Leader map: Failed to contact map worker {}", server_addr);
                     return None;
                 };
-            
+
                 let _ = stream.write_all(&message).await;
                 let mut res = Vec::new();
                 if let Err(e) = stream.read_to_end(&mut res).await {
@@ -299,11 +299,15 @@ impl FileTable {
                     return None;
                 }
                 let Ok(res) = FileSizeRes::decode(res.as_slice()) else {
-                    warn!("Leader map: Failed to decode ack from map worker {}", server_addr);
+                    warn!(
+                        "Leader map: Failed to decode ack from map worker {}",
+                        server_addr
+                    );
                     return None;
                 };
                 Some(res.size)
-            }.await;
+            }
+            .await;
             if res.is_some() {
                 file_size = res;
             }
@@ -322,8 +326,7 @@ impl FileTable {
             let mut map_results = Vec::new();
             if num_workers > size as usize {
                 info!("Leader map: More workers than lines");
-                for (vm, line) in zip(worker_vms.into_iter(), 0..size)
-                {
+                for (vm, line) in zip(worker_vms.into_iter(), 0..size) {
                     let file = file_server_map[0].0.clone();
                     let servers = file_server_map[0].1.clone();
                     let command = LeaderMapReq {
@@ -339,10 +342,7 @@ impl FileTable {
             } else {
                 info!("Leader map: Fewer workers than lines");
                 let chunk_size = (size).div_ceil(num_workers as u32);
-                for (vm, chunk) in zip(
-                    worker_vms.into_iter(),
-                    0..(num_workers as u32),
-                ) {
+                for (vm, chunk) in zip(worker_vms.into_iter(), 0..(num_workers as u32)) {
                     let file = file_server_map[0].0.clone();
                     let servers = file_server_map[0].1.clone();
                     let command = LeaderMapReq {

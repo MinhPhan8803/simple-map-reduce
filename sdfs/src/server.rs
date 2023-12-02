@@ -1,14 +1,13 @@
 use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
-    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes,
-    ServerReduceReq,
+    Ack, Delete, Fail, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LeaderStoreRes, LsRes,
+    MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes, ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
 use std::{fmt, process::Command, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
 use tracing::{error, info, instrument, warn};
@@ -143,25 +142,25 @@ async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) 
 async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
     info!("Handling GET request");
     let path = format!("/home/sdfs/{}", get_req.file_name);
-    let Ok(mut file) = fs::File::open(path).await else {
+    let Ok(file) = fs::File::open(path).await else {
         warn!("Unable to open file {}", get_req.file_name);
         return;
     };
-    let mut file_buf = [0; 4096];
+
+    let mut file_buf = String::new();
+    let mut buf_reader = BufReader::new(file);
 
     info!("Server beginning send");
-    while let Ok(read_size) = file.read(&mut file_buf).await {
-        if read_size == 0 {
+    while let Ok(size) = buf_reader.read_line(&mut file_buf).await {
+        if size == 0 {
             break;
         }
-        //println!("Server sending with size {}", read_size);
-        let send_buffer: Vec<_> = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
-        if let Err(e) = stream.write_all(&send_buffer).await {
+        if let Err(e) = stream.write_all(file_buf.as_bytes()).await {
             warn!("Unable to write to client {}", e);
         }
-        //println!("Server finished sending");
-        file_buf.fill(0);
+        file_buf.clear();
     }
+
     info!("Server handled GET request successfully");
     let _ = stream.shutdown().await;
 }
@@ -229,7 +228,7 @@ async fn handle_multi_read(mut client_stream: TcpStream, multi_read_req: MultiRe
             machine_list.machines,
             &multi_read_req.sdfs_file_name,
             &multi_read_req.local_file_name,
-            None
+            None,
         )
         .await;
     }
@@ -331,7 +330,14 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers, &file, &file, Some((map_req.start_line, map_req.end_line))).await {
+        if let Err(e) = client_get_helper(
+            servers.servers,
+            &file,
+            &file,
+            Some((map_req.start_line, map_req.end_line)),
+        )
+        .await
+        {
             warn!(
                 "Server map: Unable to fetch file from server: {}, aborting",
                 e

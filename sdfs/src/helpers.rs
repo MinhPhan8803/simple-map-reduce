@@ -2,7 +2,7 @@ use crate::message_types::{sdfs_command::Type, GetReq, SdfsCommand};
 use prost::Message;
 use std::ops::Deref;
 use tokio::fs;
-use tokio::io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, AsyncBufReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{error, info, instrument, warn};
 
@@ -36,7 +36,7 @@ impl std::fmt::Display for FileKey {
 pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     buffer: &mut T,
     stream: TcpStream,
-    line_range: Option<(u32, u32)>
+    line_range: Option<(u32, u32)>,
 ) {
     let mut read_buf = String::new();
     let mut buf_reader = BufReader::new(stream);
@@ -49,10 +49,7 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
 
             if start_line <= line_count && line_count <= end_line {
                 if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
-                    error!(
-                        "Unable to write to file with error {}",
-                        e
-                    );
+                    error!("Unable to write to file with error {}", e);
                     break;
                 }
             }
@@ -66,10 +63,7 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
                 break;
             }
             if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
-                error!(
-                    "Unable to write to file with error {}",
-                    e
-                );
+                error!("Unable to write to file with error {}", e);
                 break;
             }
             read_buf.clear();
@@ -82,7 +76,7 @@ pub async fn client_get_helper(
     machines: Vec<String>,
     sdfs_file_name: &str,
     local_file_name: &str,
-    line_range: Option<(u32, u32)>
+    line_range: Option<(u32, u32)>,
 ) -> Result<(), String> {
     let Ok(mut file) = fs::OpenOptions::new()
         .write(true)
