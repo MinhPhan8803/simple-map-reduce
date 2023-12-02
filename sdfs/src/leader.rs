@@ -1,8 +1,8 @@
 use crate::helpers::FileKey;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
-    Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LeaderStoreReq,
-    LeaderStoreRes, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand, ServerMapRes,
+    Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LsRes, MapReq,
+    PutReq, ReduceReq, SdfsCommand, ServerMapRes,
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use tracing::{error, info, instrument, warn};
 
 // Define the file table and queues
@@ -1050,64 +1050,64 @@ pub async fn run_leader(
         .unwrap();
     info!("Leader listening on port 56553");
 
-    // Sleep before doing anything
-    sleep(timeout).await;
-    println!("Leader starting after wait...Will collect files from other machines");
-    // TODO: Fetch list stores from servers
-    // For every member in the membership list, send a request to get the list of files stored on that machine
-    //loop over every machine in the membership list
-    for node in members.read().await.iter() {
-        // Skip if the node is marked as failed
-        if node.fail() {
-            warn!("Skipping failed node {:?}", node.id());
-            continue;
-        }
-        info!("Sending LeaderStoreReq to node {:?}", node.id());
-        // Create a LeaderStoreReq message
-        let message = SdfsCommand {
-            r#type: Some(Type::LeaderStoreReq(LeaderStoreReq {
-                message: "Give me your files".to_string(),
-            })),
-        }
-        .encode_to_vec();
+    // // Sleep before doing anything
+    // sleep(timeout).await;
+    // println!("Leader starting after wait...Will collect files from other machines");
+    // // TODO: Fetch list stores from servers
+    // // For every member in the membership list, send a request to get the list of files stored on that machine
+    // //loop over every machine in the membership list
+    // for node in members.read().await.iter() {
+    //     // Skip if the node is marked as failed
+    //     if node.fail() {
+    //         warn!("Skipping failed node {:?}", node.id());
+    //         continue;
+    //     }
+    //     info!("Sending LeaderStoreReq to node {:?}", node.id());
+    //     // Create a LeaderStoreReq message
+    //     let message = SdfsCommand {
+    //         r#type: Some(Type::LeaderStoreReq(LeaderStoreReq {
+    //             message: "Give me your files".to_string(),
+    //         })),
+    //     }
+    //     .encode_to_vec();
 
-        // Connect to the node and send the request
-        let machine_name = String::from_utf8(node.id().to_vec()).unwrap();
-        let ip_address = machine_name.split('_').next().unwrap();
-        info!("Connecting to node {}", ip_address);
-        let addr = format!("{}:56552", ip_address);
-        match TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                if stream.write_all(&message).await.is_ok() {
-                    // Read the response
-                    let mut res_buf = Vec::new();
-                    match stream.read_to_end(&mut res_buf).await {
-                        Ok(_) => {
-                            // Decode the LeaderStoreRes message
-                            if let Ok(res) = LeaderStoreRes::decode(res_buf.as_slice()) {
-                                // Update the file table
-                                info!("LeaderStoreRes from {}: {:?}", machine_name, res);
-                                let file_table = file_table.clone();
-                                for file_name in res.files {
-                                    file_table
-                                        .table
-                                        .entry(file_name)
-                                        .and_modify(|e| e.push(ip_address.parse().unwrap()))
-                                        .or_insert_with(|| vec![ip_address.parse().unwrap()]);
-                                }
-                            } else {
-                                warn!("Failed to decode LeaderStoreRes from {}", machine_name);
-                            }
-                        }
-                        Err(e) => warn!("Failed to read from node {}: {}", machine_name, e),
-                    }
-                } else {
-                    warn!("Failed to send LeaderStoreReq to {}", machine_name);
-                }
-            }
-            Err(e) => warn!("Failed to connect to node {}: {}", machine_name, e),
-        }
-    }
+    //     // Connect to the node and send the request
+    //     let machine_name = String::from_utf8(node.id().to_vec()).unwrap();
+    //     let ip_address = machine_name.split('_').next().unwrap();
+    //     info!("Connecting to node {}", ip_address);
+    //     let addr = format!("{}:56552", ip_address);
+    //     match TcpStream::connect(addr).await {
+    //         Ok(mut stream) => {
+    //             if stream.write_all(&message).await.is_ok() {
+    //                 // Read the response
+    //                 let mut res_buf = Vec::new();
+    //                 match stream.read_to_end(&mut res_buf).await {
+    //                     Ok(_) => {
+    //                         // Decode the LeaderStoreRes message
+    //                         if let Ok(res) = LeaderStoreRes::decode(res_buf.as_slice()) {
+    //                             // Update the file table
+    //                             info!("LeaderStoreRes from {}: {:?}", machine_name, res);
+    //                             let file_table = file_table.clone();
+    //                             for file_name in res.files {
+    //                                 file_table
+    //                                     .table
+    //                                     .entry(file_name)
+    //                                     .and_modify(|e| e.push(ip_address.parse().unwrap()))
+    //                                     .or_insert_with(|| vec![ip_address.parse().unwrap()]);
+    //                             }
+    //                         } else {
+    //                             warn!("Failed to decode LeaderStoreRes from {}", machine_name);
+    //                         }
+    //                     }
+    //                     Err(e) => warn!("Failed to read from node {}: {}", machine_name, e),
+    //                 }
+    //             } else {
+    //                 warn!("Failed to send LeaderStoreReq to {}", machine_name);
+    //             }
+    //         }
+    //         Err(e) => warn!("Failed to connect to node {}: {}", machine_name, e),
+    //     }
+    // }
 
     while rx_leader.try_recv().is_ok() {}
 
