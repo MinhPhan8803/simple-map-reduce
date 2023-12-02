@@ -348,12 +348,15 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
     // run the executable and collect keys
     // assume executable output keys to terminal
-    let Ok(raw_output) = Command::new(&map_req.executable)
+    let Ok(raw_output) = Command::new("python3")
         .args(
-            [&map_req.output_prefix]
-                .into_iter()
-                .chain(files.iter())
-                .collect::<Vec<_>>(),
+            [
+                &format!("/home/sdfs/{}", &map_req.executable),
+                &map_req.output_prefix,
+            ]
+            .into_iter()
+            .chain(files.iter())
+            .collect::<Vec<_>>(),
         )
         .output()
     else {
@@ -398,12 +401,15 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     }
 
     // run executable and send to target server
-    if let Err(e) = Command::new(&red_req.executable)
+    if let Err(e) = Command::new("python3")
         .args(
-            [&red_req.output_file]
-                .into_iter()
-                .chain(files.iter())
-                .collect::<Vec<_>>(),
+            [
+                &format!("/home/sdfs/{}", &red_req.executable),
+                &red_req.output_file,
+            ]
+            .into_iter()
+            .chain(files.iter())
+            .collect::<Vec<_>>(),
         )
         .output()
     {
