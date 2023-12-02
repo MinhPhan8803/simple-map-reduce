@@ -2,11 +2,12 @@ use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
-    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerReduceReq,
+    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes,
+    ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{collections::HashSet, fmt, process::Command, sync::Arc};
+use std::{fmt, process::Command, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
@@ -347,23 +348,25 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
     // run the executable and collect keys
     // assume executable output keys to terminal
-    let mut keys = HashSet::new();
-    for file in files {
-        let Ok(raw_output) = Command::new(&map_req.executable)
-            .args([&file, &map_req.output_prefix])
-            .output()
-        else {
-            continue;
-        };
-        let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
-            continue;
-        };
-        keys.extend(output.lines().map(|line| line.to_string()));
-    }
+    let Ok(raw_output) = Command::new(&map_req.executable)
+        .args(
+            [&map_req.output_prefix]
+                .into_iter()
+                .chain(files.iter())
+                .collect::<Vec<_>>(),
+        )
+        .output()
+    else {
+        return;
+    };
+    let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
+        return;
+    };
+    let keys: Vec<_> = output.lines().map(|line| line.to_string()).collect();
 
     // PUT the output files to the target SDFS server
-    for key in keys {
-        let file_name = FileKey::new(&map_req.output_prefix, &key);
+    for key in &keys {
+        let file_name = FileKey::new(&map_req.output_prefix, key);
         stream::iter(&map_req.target_servers)
             .for_each_concurrent(None, |server| async {
                 put_from_server(
@@ -377,10 +380,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     }
 
     // ack the leader
-    let leader_ack_buffer = Ack {
-        message: "Worker successfully executed map".to_string(),
-    }
-    .encode_to_vec();
+    let leader_ack_buffer = ServerMapRes { keys }.encode_to_vec();
     let _ = leader_stream.write_all(&leader_ack_buffer).await;
     let _ = leader_stream.shutdown().await;
 }
@@ -398,15 +398,19 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     }
 
     // run executable and send to target server
-    for file in files {
-        if let Err(e) = Command::new(&red_req.executable)
-            .args([&file, &red_req.output_file])
-            .output()
-        {
-            error!("Unable to run executable: {}", e);
-            return;
-        }
+    if let Err(e) = Command::new(&red_req.executable)
+        .args(
+            [&red_req.output_file]
+                .into_iter()
+                .chain(files.iter())
+                .collect::<Vec<_>>(),
+        )
+        .output()
+    {
+        error!("Unable to run executable: {}", e);
+        return;
     }
+
     put_from_server(
         red_req.output_file,
         red_req.target_server,
