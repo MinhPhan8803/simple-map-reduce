@@ -2,7 +2,7 @@ use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
-    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerReduceReq,
+    LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
@@ -38,7 +38,13 @@ impl fmt::Display for LocalFileList {
     }
 }
 
-async fn put_from_server(file_name: String, ip: String) {
+enum ServerPutFlavor {
+    Put,
+    Map,
+    Reduce,
+}
+
+async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor) {
     let get_req = GetReq {
         file_name: file_name.clone(),
     };
@@ -50,9 +56,16 @@ async fn put_from_server(file_name: String, ip: String) {
         warn!("Unable to connect to the other server");
         return;
     };
-
     let req_buf = SdfsCommand {
-        r#type: Some(Type::PutReq(PutReq { file_name })),
+        r#type: match flavor {
+            ServerPutFlavor::Put => Some(Type::PutReq(PutReq { file_name })),
+            ServerPutFlavor::Map => Some(Type::ServerMapReq(ServerMapReq {
+                output_file: file_name,
+            })),
+            ServerPutFlavor::Reduce => Some(Type::ServerRedReq(ServerReduceReq {
+                output_file: file_name,
+            })),
+        },
     }
     .encode_to_vec();
     let _ = inter_server_stream.write_all(&req_buf).await;
@@ -106,7 +119,12 @@ async fn handle_put(
 
 async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) {
     info!("Handling leader PUT request at server");
-    put_from_server(leader_put_req.file_name, leader_put_req.machine).await;
+    put_from_server(
+        leader_put_req.file_name,
+        leader_put_req.machine,
+        ServerPutFlavor::Put,
+    )
+    .await;
 
     info!("Server handled leader PUT successfully");
     let leader_ack = Ack {
@@ -348,7 +366,12 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
         let file_name = FileKey::new(&map_req.output_prefix, &key);
         stream::iter(&map_req.target_servers)
             .for_each_concurrent(None, |server| async {
-                put_from_server(file_name.to_string(), server.to_string()).await;
+                put_from_server(
+                    file_name.to_string(),
+                    server.to_string(),
+                    ServerPutFlavor::Map,
+                )
+                .await;
             })
             .await;
     }
@@ -384,7 +407,12 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
             return;
         }
     }
-    put_from_server(red_req.output_file, red_req.target_server).await;
+    put_from_server(
+        red_req.output_file,
+        red_req.target_server,
+        ServerPutFlavor::Reduce,
+    )
+    .await;
 
     // end request
     let leader_ack_buffer = Ack {
@@ -395,7 +423,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     let _ = leader_stream.shutdown().await;
 }
 
-async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq) {
+async fn handle_server_map_reduce(mut server_stream: TcpStream, output_file: String) {
     info!("Handling server Reduce request");
     let ack_buffer = Ack {
         message: "Reduce acknowledged".to_string(),
@@ -406,7 +434,7 @@ async fn handle_server_reduce(mut server_stream: TcpStream, req: ServerReduceReq
     let mut data_buffer = Vec::new();
     write_to_buf(&mut data_buffer, server_stream).await;
 
-    let path = format!("/home/sdfs/{}", req.output_file);
+    let path = format!("/home/sdfs/{}", output_file);
     let Ok(file) = fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -522,12 +550,16 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         });
                     }
                     Some(Type::ServerRedReq(req)) => {
-                        tokio::spawn(async move {
-                            handle_server_reduce(stream, req).await;
+                        tokio::task::spawn_blocking(move || async {
+                            handle_server_map_reduce(stream, req.output_file).await;
+                        });
+                    }
+                    Some(Type::ServerMapReq(req)) => {
+                        tokio::task::spawn_blocking(move || async {
+                            handle_server_map_reduce(stream, req.output_file).await;
                         });
                     }
                     _ => {
-                        // TODO: Add delete command
                         // Other types of commands are not handled here
                         tokio::spawn(async move {
                             let fail_buffer = Fail {

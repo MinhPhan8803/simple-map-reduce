@@ -353,7 +353,7 @@ async fn process_list(
     members: Arc<RwLock<Vec<Node>>>,
     leader_ip: Arc<RwLock<String>>,
     tx_leader: mpsc::Sender<Vec<String>>,
-    leader_election: Arc<LeaderElection>,
+    _leader_election: Arc<LeaderElection>,
 ) {
     loop {
         let local_time: DateTime<FixedOffset> = Local::now().into();
@@ -390,7 +390,7 @@ async fn process_list(
             });
         }
 
-        let mut should_run_election = false;
+        let mut _should_run_election = false;
 
         if !clean_ids.is_empty() {
             // For normal gossip, just cleanup
@@ -412,7 +412,7 @@ async fn process_list(
                     warn!("Removing node due to cleanup: {}", node_id);
                     //println!("Removing node due to cleanup: {}", node_id);
                     if node.id().starts_with(leader_guard.as_bytes()) {
-                        should_run_election = true;
+                        _should_run_election = true;
                     }
                 } else {
                     new_guard.push(node.clone());
