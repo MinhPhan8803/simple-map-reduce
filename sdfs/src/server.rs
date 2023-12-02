@@ -374,6 +374,9 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
             warn!("Server map: unable to parse keys");
             return None;
         };
+        if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
+            info!("Server map: stderr {}", stderr);
+        }
         Some(
             output
                 .lines()
