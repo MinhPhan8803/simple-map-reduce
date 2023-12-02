@@ -207,7 +207,7 @@ impl Client {
         // Use the list of replicas from the leader's response to fetch the file from one of the replicas.
         // For simplicity, we'll just use the first replica. In real-world scenarios, you might want to add
         // fault tolerance here by trying the next replica if one fails.
-        match client_get_helper(machine_list.machines, sdfs_file_name, local_file_name).await {
+        match client_get_helper(machine_list.machines, sdfs_file_name, local_file_name, None).await {
             Ok(_) => {
                 let ack_buffer = Ack {
                     message: "File getting completed successfully".to_string(),

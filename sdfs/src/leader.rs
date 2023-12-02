@@ -351,7 +351,7 @@ impl FileTable {
                         file_server_map: HashMap::from([(file, servers)]),
                         target_servers: target_vms.clone(),
                         start_line: chunk * chunk_size,
-                        end_line: (chunk + 1) * chunk_size,
+                        end_line: (chunk + 1) * chunk_size - 1,
                     };
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }

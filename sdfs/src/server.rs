@@ -110,7 +110,7 @@ async fn handle_put(
         return;
     };
 
-    write_to_buf(&mut file, stream).await;
+    write_to_buf(&mut file, stream, None).await;
 
     if let Err(e) = file.sync_all().await {
         error!("Unable to sync file {e}");
@@ -229,6 +229,7 @@ async fn handle_multi_read(mut client_stream: TcpStream, multi_read_req: MultiRe
             machine_list.machines,
             &multi_read_req.sdfs_file_name,
             &multi_read_req.local_file_name,
+            None
         )
         .await;
     }
@@ -330,7 +331,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers, &file, &file).await {
+        if let Err(e) = client_get_helper(servers.servers, &file, &file, Some((map_req.start_line, map_req.end_line))).await {
             warn!(
                 "Server map: Unable to fetch file from server: {}, aborting",
                 e
@@ -407,7 +408,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     // fetch files
     let mut files = Vec::new();
     for (key, servers) in red_req.key_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key).await {
+        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key, None).await {
             error!("Unable to fetch key file: {}", e);
             return;
         }
@@ -468,7 +469,7 @@ async fn handle_server_map_reduce(
     let _ = server_stream.write_all(&ack_buffer).await;
 
     let mut data_buffer = Vec::new();
-    write_to_buf(&mut data_buffer, server_stream).await;
+    write_to_buf(&mut data_buffer, server_stream, None).await;
 
     let path = format!("/home/sdfs/{}", output_file);
     let Ok(file) = fs::OpenOptions::new()

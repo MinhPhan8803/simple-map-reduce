@@ -36,21 +36,44 @@ impl std::fmt::Display for FileKey {
 pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     buffer: &mut T,
     stream: TcpStream,
+    line_range: Option<(u32, u32)>
 ) {
     let mut read_buf = String::new();
     let mut buf_reader = BufReader::new(stream);
-    while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
-        if size == 0 {
-            break;
+    if let Some((start_line, end_line)) = line_range {
+        let mut line_count = 0;
+        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+            if size == 0 {
+                break;
+            }
+
+            if start_line <= line_count && line_count <= end_line {
+                if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
+                    error!(
+                        "Unable to write to file with error {}",
+                        e
+                    );
+                    break;
+                }
+            }
+
+            line_count += 1;
+            read_buf.clear();
         }
-        if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
-            error!(
-                "Unable to write to file with error {}",
-                e
-            );
-            break;
+    } else {
+        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+            if size == 0 {
+                break;
+            }
+            if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
+                error!(
+                    "Unable to write to file with error {}",
+                    e
+                );
+                break;
+            }
+            read_buf.clear();
         }
-        read_buf.clear();
     }
 }
 
@@ -59,6 +82,7 @@ pub async fn client_get_helper(
     machines: Vec<String>,
     sdfs_file_name: &str,
     local_file_name: &str,
+    line_range: Option<(u32, u32)>
 ) -> Result<(), String> {
     let Ok(mut file) = fs::OpenOptions::new()
         .write(true)
@@ -102,7 +126,7 @@ pub async fn client_get_helper(
         info!("Successfully sent to server");
 
         // Receive the file data from the replica
-        write_to_buf(&mut file, server_stream).await;
+        write_to_buf(&mut file, server_stream, line_range).await;
 
         info!("Client GET finished");
         if let Err(e) = file.sync_all().await {
