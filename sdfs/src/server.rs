@@ -608,7 +608,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         else {
                             continue;
                         };
-                        if local_addr != peer_addr {
+                        if local_addr.ip() != peer_addr.ip() {
                             tokio::spawn(async move {
                                 handle_server_map_reduce(stream, req.output_file, true, file_list)
                                     .await;
@@ -622,7 +622,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         else {
                             continue;
                         };
-                        if local_addr != peer_addr {
+                        if local_addr.ip() != peer_addr.ip() {
                             tokio::spawn(async move {
                                 handle_server_map_reduce(stream, req.output_file, false, file_list)
                                     .await;
