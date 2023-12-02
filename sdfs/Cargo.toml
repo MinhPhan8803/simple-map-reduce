@@ -22,7 +22,6 @@ rand = "0.8.5"
 indicatif = "0.17.7"
 dashmap = "5.5.3"
 inquire = "0.6.2"
-file-lock = "2.1.10"
 fd-lock = "4.0.0"
 
 [build-dependencies]

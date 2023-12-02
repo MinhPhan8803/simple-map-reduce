@@ -236,16 +236,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "file-lock"
-version = "2.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec788ff423b138c9c5faf201347926573b605c517fb1c5a56aa632b218bf47bb"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -909,7 +899,6 @@ dependencies = [
  "chrono",
  "dashmap",
  "fd-lock",
- "file-lock",
  "futures",
  "hostname",
  "indicatif",
