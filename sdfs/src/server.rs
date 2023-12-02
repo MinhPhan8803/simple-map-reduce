@@ -1,7 +1,7 @@
 use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetData, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
+    Ack, Delete, Fail, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq,
     LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes,
     ServerReduceReq,
 };
@@ -110,7 +110,7 @@ async fn handle_put(
         return;
     };
 
-    write_to_buf(&mut file, stream).await;
+    write_to_buf(&mut file, stream, None).await;
 
     if let Err(e) = file.sync_all().await {
         error!("Unable to sync file {e}");
@@ -148,13 +148,6 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
         return;
     };
     let mut file_buf = [0; 4096];
-    let mut file_offset = 0;
-    let mut mesg = GetData {
-        machine: "".to_string(),
-        file_name: get_req.file_name,
-        offset: 0,
-        data: Vec::new(),
-    };
 
     info!("Server beginning send");
     while let Ok(read_size) = file.read(&mut file_buf).await {
@@ -162,17 +155,11 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
             break;
         }
         //println!("Server sending with size {}", read_size);
-        let send_buffer = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
-        //println!("Server send buffer: {:?}", &send_buffer);
-        mesg.offset = file_offset as u64;
-        mesg.data = send_buffer;
-        let mesg_buffer = mesg.encode_length_delimited_to_vec();
-        //println!("Server mesg buffer: {:?}", mesg_buffer);
-        if let Err(e) = stream.write_all(&mesg_buffer).await {
+        let send_buffer: Vec<_> = file_buf.iter().take_while(|&&b| b != 0).copied().collect();
+        if let Err(e) = stream.write_all(&send_buffer).await {
             warn!("Unable to write to client {}", e);
         }
         //println!("Server finished sending");
-        file_offset += read_size;
         file_buf.fill(0);
     }
     info!("Server handled GET request successfully");
@@ -242,6 +229,7 @@ async fn handle_multi_read(mut client_stream: TcpStream, multi_read_req: MultiRe
             machine_list.machines,
             &multi_read_req.sdfs_file_name,
             &multi_read_req.local_file_name,
+            None
         )
         .await;
     }
@@ -343,7 +331,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers, &file, &file).await {
+        if let Err(e) = client_get_helper(servers.servers, &file, &file, Some((map_req.start_line, map_req.end_line))).await {
             warn!(
                 "Server map: Unable to fetch file from server: {}, aborting",
                 e
@@ -420,7 +408,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     // fetch files
     let mut files = Vec::new();
     for (key, servers) in red_req.key_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key).await {
+        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key, None).await {
             error!("Unable to fetch key file: {}", e);
             return;
         }
@@ -481,7 +469,7 @@ async fn handle_server_map_reduce(
     let _ = server_stream.write_all(&ack_buffer).await;
 
     let mut data_buffer = Vec::new();
-    write_to_buf(&mut data_buffer, server_stream).await;
+    write_to_buf(&mut data_buffer, server_stream, None).await;
 
     let path = format!("/home/sdfs/{}", output_file);
     let Ok(file) = fs::OpenOptions::new()

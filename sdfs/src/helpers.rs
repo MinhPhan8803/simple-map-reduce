@@ -1,8 +1,8 @@
-use crate::message_types::{sdfs_command::Type, GetData, GetReq, SdfsCommand};
-use prost::{length_delimiter_len, Message};
+use crate::message_types::{sdfs_command::Type, GetReq, SdfsCommand};
+use prost::Message;
 use std::ops::Deref;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, AsyncBufReadExt};
 use tokio::net::TcpStream;
 use tracing::{error, info, instrument, warn};
 
@@ -35,37 +35,44 @@ impl std::fmt::Display for FileKey {
 
 pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     buffer: &mut T,
-    mut stream: TcpStream,
+    stream: TcpStream,
+    line_range: Option<(u32, u32)>
 ) {
-    let mut res_buffer: Vec<u8> = Vec::new();
-    let mut remaining_buffer = [0; 5120];
-    while let Ok(n) = stream.read(&mut remaining_buffer).await {
-        //println!("Read data from client with size {}", n);
-        if n == 0 {
-            break;
+    let mut read_buf = String::new();
+    let mut buf_reader = BufReader::new(stream);
+    if let Some((start_line, end_line)) = line_range {
+        let mut line_count = 0;
+        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+            if size == 0 {
+                break;
+            }
+
+            if start_line <= line_count && line_count <= end_line {
+                if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
+                    error!(
+                        "Unable to write to file with error {}",
+                        e
+                    );
+                    break;
+                }
+            }
+
+            line_count += 1;
+            read_buf.clear();
         }
-
-        let (left, _) = remaining_buffer.split_at_mut(n);
-        res_buffer.extend_from_slice(left);
-        remaining_buffer.fill(0);
-
-        while let Ok(res_data) = GetData::decode_length_delimited(res_buffer.as_slice()) {
-            //println!("Decoded data from client, seeking file to: {}", res_data.offset);
-            let raw_length = res_data.encoded_len();
-            let delim_length = length_delimiter_len(raw_length);
-            res_buffer = res_buffer.split_off(raw_length + delim_length);
-            // if let Err(e) = file.seek(io::SeekFrom::Start(res_data.offset)).await {
-            //     error!("Unable to seek file {}, aborting", e);
-            //     return;
-            // };
-            // Write the fetched data to a local file
-            if let Err(e) = buffer.write_all(&res_data.data).await {
+    } else {
+        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+            if size == 0 {
+                break;
+            }
+            if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
                 error!(
-                    "Unable to write to file at offset {} with error {}",
-                    res_data.offset, e
+                    "Unable to write to file with error {}",
+                    e
                 );
                 break;
             }
+            read_buf.clear();
         }
     }
 }
@@ -75,6 +82,7 @@ pub async fn client_get_helper(
     machines: Vec<String>,
     sdfs_file_name: &str,
     local_file_name: &str,
+    line_range: Option<(u32, u32)>
 ) -> Result<(), String> {
     let Ok(mut file) = fs::OpenOptions::new()
         .write(true)
@@ -118,7 +126,7 @@ pub async fn client_get_helper(
         info!("Successfully sent to server");
 
         // Receive the file data from the replica
-        write_to_buf(&mut file, server_stream).await;
+        write_to_buf(&mut file, server_stream, line_range).await;
 
         info!("Client GET finished");
         if let Err(e) = file.sync_all().await {

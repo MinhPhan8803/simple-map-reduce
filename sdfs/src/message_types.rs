@@ -3,7 +3,7 @@
 pub struct SdfsCommand {
     #[prost(
         oneof = "sdfs_command::Type",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub r#type: ::core::option::Option<sdfs_command::Type>,
 }
@@ -48,6 +48,8 @@ pub mod sdfs_command {
         LeaderMapReq(super::LeaderMapReq),
         #[prost(message, tag = "18")]
         ServerMapReq(super::ServerMapReq),
+        #[prost(message, tag = "19")]
+        FileSizeReq(super::FileSizeReq),
         #[prost(message, tag = "20")]
         LeaderRedReq(super::LeaderReduceReq),
         #[prost(message, tag = "21")]
@@ -215,6 +217,10 @@ pub struct LeaderMapReq {
     >,
     #[prost(string, repeated, tag = "4")]
     pub target_servers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint32, tag = "5")]
+    pub start_pos: u32,
+    #[prost(uint32, tag = "6")]
+    pub end_pos: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -239,4 +245,16 @@ pub struct KeyServers {
 pub struct ServerReduceReq {
     #[prost(string, tag = "1")]
     pub output_file: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileSizeReq {
+    #[prost(string, tag = "1")]
+    pub file_name: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileSizeRes {
+    #[prost(uint32, tag = "1")]
+    pub size: u32,
 }

@@ -2,7 +2,7 @@ use crate::helpers::FileKey;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
     Ack, Delete, GetReq, KeyServers, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LsRes, MapReq,
-    PutReq, ReduceReq, SdfsCommand, ServerMapRes,
+    PutReq, ReduceReq, SdfsCommand, ServerMapRes, FileSizeReq, FileSizeRes
 };
 use crate::node::Node;
 use dashmap::DashMap;
@@ -241,6 +241,7 @@ impl FileTable {
                     },
                 )
             })
+            .take(1)
             .collect();
 
         info!(
@@ -270,39 +271,87 @@ impl FileTable {
         }
 
         info!("Leader map: Found active workers: {:?}", worker_vms);
-        //TODO Find min of total active and number of workers
+        
+        // get file count
+        let message = SdfsCommand {
+            r#type: Some(Type::FileSizeReq(FileSizeReq{
+                file_name: file_server_map[0].0.clone(),
+            })),
+        }
+        .encode_to_vec();
+        
+        let mut file_size = None;
+        for server in &file_server_map[0].1.servers {
+            let res = async {
+                let server_addr = format!("{server}:56552");
+                let Ok(mut stream) = TcpStream::connect(&server_addr).await else {
+                    warn!("Leader map: Failed to contact map worker {}", server_addr);
+                    return None;
+                };
+            
+                let _ = stream.write_all(&message).await;
+                let mut res = Vec::new();
+                if let Err(e) = stream.read_to_end(&mut res).await {
+                    warn!(
+                        "Leader map: Failed to get ack from map worker {}: {}",
+                        server_addr, e
+                    );
+                    return None;
+                }
+                let Ok(res) = FileSizeRes::decode(res.as_slice()) else {
+                    warn!("Leader map: Failed to decode ack from map worker {}", server_addr);
+                    return None;
+                };
+                Some(res.size)
+            }.await;
+            if res.is_some() {
+                file_size = res;
+            }
+        }
+
+        let Some(size) = file_size else {
+            return;
+        };
 
         // Step 3: Distribute files among workers
         let mut keys = Vec::new();
         loop {
             info!("Leader map: Initiating map at workers");
             let num_workers = worker_vms.len();
-            let num_files = file_server_map.len();
             let mut task_handlers = JoinSet::new();
             let mut map_results = Vec::new();
-            if num_workers > num_files {
-                info!("Leader map: More workers than files");
-                for (vm, (dir, server)) in zip(worker_vms.into_iter(), file_server_map.into_iter())
+            if num_workers > size as usize {
+                info!("Leader map: More workers than lines");
+                for (vm, line) in zip(worker_vms.into_iter(), 0..size)
                 {
+                    let file = file_server_map[0].0.clone();
+                    let servers = file_server_map[0].1.clone();
                     let command = LeaderMapReq {
                         executable: map_req.executable.clone(),
                         output_prefix: map_req.file_name_prefix.clone(),
-                        file_server_map: HashMap::from([(dir, server)]),
+                        file_server_map: HashMap::from([(file, servers)]),
                         target_servers: target_vms.clone(),
+                        start_line: line,
+                        end_line: line,
                     };
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }
             } else {
-                info!("Leader map: Fewer workers than files");
-                for (vm, dir_file_chunk) in zip(
+                info!("Leader map: Fewer workers than lines");
+                let chunk_size = (size).div_ceil(num_workers as u32);
+                for (vm, chunk) in zip(
                     worker_vms.into_iter(),
-                    file_server_map.chunks(num_files / num_workers),
+                    0..(num_workers as u32),
                 ) {
+                    let file = file_server_map[0].0.clone();
+                    let servers = file_server_map[0].1.clone();
                     let command = LeaderMapReq {
                         executable: map_req.executable.clone(),
                         output_prefix: map_req.file_name_prefix.clone(),
-                        file_server_map: HashMap::from_iter(dir_file_chunk.to_vec()),
+                        file_server_map: HashMap::from([(file, servers)]),
                         target_servers: target_vms.clone(),
+                        start_line: chunk * chunk_size,
+                        end_line: (chunk + 1) * chunk_size - 1,
                     };
                     task_handlers.spawn(send_leader_map_req(vm, command));
                 }
