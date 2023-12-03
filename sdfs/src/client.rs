@@ -412,6 +412,7 @@ impl Client {
         let mut res_buffer = [0; 1024];
         let Ok(n) = leader_stream.read(&mut res_buffer).await else {
             error!("No leader response to request: ");
+            println!("Map failed, aborting");
             return;
         };
         if let Err(e) = Ack::decode(&res_buffer[..n]) {
@@ -419,6 +420,7 @@ impl Client {
         } else {
             info!("Map successful");
         };
+        println!("Map successful");
     }
 
     pub async fn reduce(
@@ -455,6 +457,7 @@ impl Client {
         let mut res_buffer = [0; 1024];
         let Ok(n) = leader_stream.read(&mut res_buffer).await else {
             error!("No leader response to request: ");
+            println!("Reduce failed, aborting");
             return;
         };
         if let Err(e) = Ack::decode(&res_buffer[..n]) {
@@ -462,5 +465,6 @@ impl Client {
         } else {
             info!("Reduce successful");
         };
+        println!("Reduce successful");
     }
 }

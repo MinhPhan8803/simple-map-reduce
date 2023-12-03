@@ -241,6 +241,11 @@ impl FileTable {
             .take(1)
             .collect();
 
+        if file_server_map.is_empty() {
+            warn!("Found no server containing the file");
+            return;
+        }
+
         info!(
             "Leader map: Found files matching prefix: {:?}",
             file_server_map
