@@ -261,6 +261,12 @@ async fn command_listener(
                     )
                     .await;
             }
+            ["SELECT", "ALL", "FROM", dataset, "WHERE", regex] => {
+                client.filter(dataset, regex).await;
+            }
+            ["SELECT", "ALL", "FROM", d1, d2, "WHERE", d1_field, "=", d2_field] => {
+                client.join(d1, d2, d1_field, d2_field).await;
+            }
             ["rejoin", introducer] => {
                 println!("Rejoining via introducer: {}", introducer);
             }

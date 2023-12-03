@@ -387,6 +387,7 @@ impl Client {
         file_name_prefix: &str,
         input_dir: &str,
     ) {
+        let start_time = Instant::now();
         info!("Starting Map on client side");
         let leader_address = {
             let locked = self.leader_ip.read().await;
@@ -422,6 +423,11 @@ impl Client {
             info!("Map successful");
             println!("Map successful");
         };
+        let duration = start_time.elapsed();
+        println!(
+            "Time taken for map: {:?}",
+            duration
+        );
     }
 
     pub async fn reduce(
@@ -432,6 +438,7 @@ impl Client {
         input_dir: &str,
         is_delete: bool,
     ) {
+        let start_time = Instant::now();
         info!("Starting Reduce on client side");
         let leader_address = {
             let locked = self.leader_ip.read().await;
@@ -468,5 +475,34 @@ impl Client {
             info!("Reduce successful");
             println!("Reduce successful");
         };
+        let duration = start_time.elapsed();
+        println!(
+            "Time taken for reduce: {:?}",
+            duration
+        );
+    }
+
+    pub async fn filter(&self, dataset: &str, regex: &str) {
+        let start_time = Instant::now();
+
+
+
+        let duration = start_time.elapsed();
+        println!(
+            "Time taken for filter: {:?}",
+            duration
+        );
+    }
+
+    pub async fn join(&self, d1: &str, d2: &str, d1_field: &str, d2_field: &str) {
+        let start_time = Instant::now();
+
+
+
+        let duration = start_time.elapsed();
+        println!(
+            "Time taken for filter: {:?}",
+            duration
+        );
     }
 }
