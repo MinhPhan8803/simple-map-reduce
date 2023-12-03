@@ -443,8 +443,10 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
 
     // run executable and send to target server
     match tokio::task::block_in_place(|| {
-        Command::new("python3")
-            .args(
+        let mut command = 
+        Command::new("python3");
+
+        command.args(
                 [
                     &format!("executors/{}", &red_req.executable),
                     &red_req.output_file,
@@ -452,8 +454,10 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
                 .into_iter()
                 .chain(files.iter())
                 .collect::<Vec<_>>(),
-            )
-            .output()
+            );
+        println!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
+        
+        command.output()
     }) {
         Err(e) => {
             error!("Unable to run executable: {}", e);
