@@ -15,6 +15,7 @@ def map_filter(input_file, output_prefix, regex):
             # Write the matching line to the output file
             with open(f'/home/sdfs/mrout/{output_prefix}_filtered', 'a') as out_file:
                 out_file.write(line)
+    print('filtered')
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
