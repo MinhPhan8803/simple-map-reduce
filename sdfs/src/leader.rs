@@ -331,7 +331,7 @@ impl FileTable {
         let mut keys = Vec::new();
         loop {
             info!("Leader map: Initiating map at workers");
-            let mut num_workers = map_req.num_workers;
+            let mut num_workers = worker_vms.len() as u32;
             if num_workers > size {
                 num_workers = size;
             }
@@ -495,7 +495,7 @@ impl FileTable {
         // send reduce requests to workers
         loop {
             info!("Leader reduce: sending reduce requests to workers");
-            let worker_vms_num = red_req.num_workers as usize;
+            let worker_vms_num = worker_vms.len();
 
             let mut task_handlers = JoinSet::new();
             let mut reduce_results = Vec::new();

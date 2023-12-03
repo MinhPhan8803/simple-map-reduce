@@ -413,8 +413,8 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
                 .await;
             })
             .await;
-        let path = format!("/home/sdfs/mrout/{file_name}");
-        let _ = fs::remove_file(path).await;
+        //let path = format!("/home/sdfs/mrout/{file_name}");
+        //let _ = fs::remove_file(path).await;
     }
 
     info!("Server map: successfully put files on target servers");
@@ -461,7 +461,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         }
         Ok(raw_output) => {
             if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
-                info!("Server map: stderr {}", stderr);
+                info!("Server reduce: stderr {}", stderr);
             }
         }
     };
@@ -479,8 +479,8 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     .await;
     info!("Finished PUT'ing");
 
-    let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
-    let _ = fs::remove_file(path).await;
+    //let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
+    //let _ = fs::remove_file(path).await;
 
     // end request
     let leader_ack_buffer = Ack {
