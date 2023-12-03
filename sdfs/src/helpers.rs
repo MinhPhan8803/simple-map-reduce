@@ -38,18 +38,18 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
     stream: TcpStream,
     line_range: Option<(u32, u32)>,
 ) {
-    let mut read_buf = String::new();
+    let mut read_buf = Vec::new();
     let mut buf_reader = BufReader::new(stream);
     if let Some((start_line, end_line)) = line_range {
         let mut line_count = 0;
-        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+        while let Ok(size) = buf_reader.read_until(b'\n', &mut read_buf).await {
             info!("Read from stream with size: {}", size);
             if size == 0 {
                 break;
             }
 
             if start_line <= line_count && line_count <= end_line {
-                if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
+                if let Err(e) = buffer.write_all(&read_buf).await {
                     error!("Unable to write to file with error {}", e);
                     break;
                 }
@@ -59,11 +59,11 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
             read_buf.clear();
         }
     } else {
-        while let Ok(size) = buf_reader.read_line(&mut read_buf).await {
+        while let Ok(size) = buf_reader.read_until(b'\n', &mut read_buf).await {
             if size == 0 {
                 break;
             }
-            if let Err(e) = buffer.write_all(read_buf.as_bytes()).await {
+            if let Err(e) = buffer.write_all(&read_buf).await {
                 error!("Unable to write to file with error {}", e);
                 break;
             }
