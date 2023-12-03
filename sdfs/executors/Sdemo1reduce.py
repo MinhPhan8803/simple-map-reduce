@@ -9,17 +9,22 @@ def reduce_detections(input_prefix, destination_file):
         total_count = 0
         for filename in os.listdir('/home/sdfs/mrin'):
             if filename.startswith(input_prefix):
-                with open(filename, 'r') as file:
-                    lines = file.readlines()
-                    for line in lines:
-                        detection, count = line.strip().split('\t')
-                        count = int(count)
+                try:
+                    file = open('/home/sdfs/mrin/' + filename, 'r')
+                except FileNotFoundError:
+                    print("Error")
+                else:
+                    with file:
+                        lines = file.readlines()
+                        for line in lines:
+                            detection, count = line.strip().split('\t')
+                            count = int(count)
 
-                        if detection in detection_count:
-                            detection_count[detection] += count
-                        else:
-                            detection_count[detection] = count
-                        total_count += count
+                            if detection in detection_count:
+                                detection_count[detection] += count
+                            else:
+                                detection_count[detection] = count
+                            total_count += count
         
         for detection, count in detection_count.items():
             percent = (count / total_count) * 100

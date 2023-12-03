@@ -6,11 +6,16 @@ def reduce_words(input_prefix, destination_file):
         total_count = 0
         for filename in os.listdir('/home/sdfs/mrin'):
             if filename.startswith(input_prefix):
-                with open(filename, 'r') as file:
-                    lines = file.readlines()
-                    # Assume the format is 'word\tcount\n'
-                    _word, count = lines[0].strip().split('\t')
-                    total_count += int(count)
+                try:
+                    file = open('/home/sdfs/mrin/' + filename, 'r')
+                except FileNotFoundError:
+                    print("Error")
+                else:
+                    with file:
+                        lines = file.readlines()
+                        # Assume the format is 'word\tcount\n'
+                        _word, count = lines[0].strip().split('\t')
+                        total_count += int(count)
         dest_file.write(f'{total_count}\n')
 
 if __name__ == "__main__":

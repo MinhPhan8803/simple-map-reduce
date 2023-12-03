@@ -6,8 +6,13 @@ def reduce_filter(input_prefix, destination_file):
     with open('/home/sdfs/mrout/'+ destination_file, 'w') as dest_file:
         for filename in os.listdir('/home/sdfs/mrin'):
             if filename.startswith(input_prefix):
-                with open(filename, 'r') as file:
-                    dest_file.write(file.read())
+                try:
+                    file = open('/home/sdfs/mrin/' + filename, 'r')
+                except FileNotFoundError:
+                    print("Error")
+                else:
+                    with file:
+                        dest_file.write(file.read())
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

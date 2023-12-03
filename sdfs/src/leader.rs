@@ -504,7 +504,6 @@ impl FileTable {
             let chunk_size = (file_server_map.len()).div_ceil(worker_vms_num);
             let task_permit: Arc<Semaphore> = Arc::new(Semaphore::new(worker_vms_num));
 
-            info!("Leader reduce: fewer workers than files");
             for (vm, key_file_chunk) in zip(
                 worker_vms.into_iter().cycle(),
                 file_server_map.chunks(chunk_size),
