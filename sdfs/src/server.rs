@@ -434,7 +434,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     info!("Finished fetching files");
 
     // run executable and send to target server
-    if let Err(e) = tokio::task::block_in_place(|| {
+    match tokio::task::block_in_place(|| {
         Command::new("python3")
             .args(
                 [
@@ -447,9 +447,16 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
             )
             .output()
     }) {
-        error!("Unable to run executable: {}", e);
-        return;
-    }
+        Err(e) => {
+            error!("Unable to run executable: {}", e);
+            return;
+        }
+        Ok(raw_output) => {
+            if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
+                info!("Server map: stderr {}", stderr);
+            }
+        }
+    };
     info!("Finishing running executable");
 
     for local_key in local_keys {
