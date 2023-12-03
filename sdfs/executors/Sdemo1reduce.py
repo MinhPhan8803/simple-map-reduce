@@ -7,7 +7,7 @@ def reduce_detections(input_prefix, destination_file):
     with open('/home/sdfs/mrout/'+ destination_file, 'w') as dest_file:
         detection_count = {}
         total_count = 0
-        for filename in os.listdir('/home/sdfs/mrout'):
+        for filename in os.listdir('/home/sdfs/mrin'):
             if filename.startswith(input_prefix):
                 with open(filename, 'r') as file:
                     lines = file.readlines()
