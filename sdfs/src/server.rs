@@ -358,7 +358,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
         let Ok(raw_output) = Command::new("python3")
             .args(
                 [
-                    &format!("/home/sdfs/{}", &map_req.executable),
+                    &format!("executors/{}", &map_req.executable),
                     &map_req.output_prefix,
                 ]
                 .into_iter()
@@ -386,6 +386,11 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     }) else {
         return;
     };
+
+    if keys.is_empty() {
+        warn!("No keys output for map");
+        return;
+    }
 
     for local_file in local_files {
         let _ = fs::remove_file(local_file).await;
@@ -438,7 +443,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         Command::new("python3")
             .args(
                 [
-                    &format!("/home/sdfs/{}", &red_req.executable),
+                    &format!("executors/{}", &red_req.executable),
                     &red_req.output_file,
                 ]
                 .into_iter()

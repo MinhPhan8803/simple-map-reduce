@@ -272,11 +272,11 @@ impl FileTable {
 
         let mut worker_vms = active_vms.clone();
         {
-            let Some(executable_servers) = self.table.get(&map_req.executable) else {
-                warn!("Leader map: No executable found in the file system, aborting");
-                return;
-            };
-            worker_vms.retain(|vm| executable_servers.contains(vm));
+            // let Some(executable_servers) = self.table.get(&map_req.executable) else {
+            //     warn!("Leader map: No executable found in the file system, aborting");
+            //     return;
+            // };
+            // worker_vms.retain(|vm| executable_servers.contains(vm));
             worker_vms.truncate(map_req.num_workers as usize);
         }
 
@@ -479,11 +479,11 @@ impl FileTable {
 
         let mut worker_vms = active_vms.clone();
         {
-            let Some(executable_servers) = self.table.get(&red_req.executable) else {
-                info!("No executable found in the file system, abortin");
-                return;
-            };
-            worker_vms.retain(|vm| executable_servers.contains(vm));
+            // let Some(executable_servers) = self.table.get(&red_req.executable) else {
+            //     info!("No executable found in the file system, abortin");
+            //     return;
+            // };
+            // worker_vms.retain(|vm| executable_servers.contains(vm));
             worker_vms.truncate(red_req.num_workers as usize);
         }
 
