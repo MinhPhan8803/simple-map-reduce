@@ -145,10 +145,7 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
         warn!("Leader map: Failed to decode ack from map worker {}", vm);
         return fail;
     };
-    info!(
-        "Leader map: Successfully executed map at worker {} with keys {:?}",
-        vm, res.keys
-    );
+    info!("Leader map: Successfully executed map at worker {}", vm);
     succ.keys = res.keys;
     succ
 }
@@ -345,6 +342,12 @@ impl FileTable {
                 for (vm, chunk) in zip(worker_vms.into_iter(), 0..(num_workers as u32)) {
                     let file = file_server_map[0].0.clone();
                     let servers = file_server_map[0].1.clone();
+                    info!(
+                        "Chunk {}: start line {}, end line {}",
+                        chunk,
+                        chunk * chunk_size,
+                        (chunk + 1) * chunk_size - 1
+                    );
                     let command = LeaderMapReq {
                         executable: map_req.executable.clone(),
                         output_prefix: map_req.file_name_prefix.clone(),

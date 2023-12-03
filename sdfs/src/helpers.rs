@@ -33,7 +33,8 @@ impl std::fmt::Display for FileKey {
     }
 }
 
-pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
+#[instrument(name = "Buf write helper", level = "trace")]
+pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin + std::fmt::Debug>(
     buffer: &mut T,
     stream: TcpStream,
     line_range: Option<(u32, u32)>,
@@ -49,6 +50,7 @@ pub async fn write_to_buf<T: AsyncWrite + std::marker::Unpin>(
             }
 
             if start_line <= line_count && line_count <= end_line {
+                info!("Currently at line {}, within range", line_count);
                 if let Err(e) = buffer.write_all(&read_buf).await {
                     error!("Unable to write to file with error {}", e);
                     break;
