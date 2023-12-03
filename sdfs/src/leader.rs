@@ -359,6 +359,7 @@ impl FileTable {
                     target_servers: target_vms.clone(),
                     start_line: chunk * chunk_size,
                     end_line: (chunk + 1) * chunk_size - 1,
+                    arguments: map_req.arguments.clone(),
                 };
                 let task_permit_cloned = task_permit.clone();
                 if let Ok(permit) = task_permit_cloned.acquire_owned().await {

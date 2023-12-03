@@ -364,11 +364,16 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // assume executable output keys to terminal
     let Some(keys) = tokio::task::block_in_place(|| {
         let Ok(raw_output) = Command::new("python3")
-            .args([
-                &format!("executors/{}", &map_req.executable),
-                &files[0],
-                &map_req.output_prefix,
-            ])
+            .args(
+                [
+                    &format!("executors/{}", &map_req.executable),
+                    &files[0],
+                    &map_req.output_prefix,
+                ]
+                .into_iter()
+                .chain(&map_req.arguments)
+                .collect::<Vec<_>>(),
+            )
             .output()
         else {
             warn!("Server map: unable to run executable");

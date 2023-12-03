@@ -108,6 +108,7 @@ message LeaderMapReq {
     repeated string target_servers = 4;
     uint32 start_line = 5;
     uint32 end_line = 6;
+    repeated string arguments = 7;
 }
 
 message ServerMapReq {
