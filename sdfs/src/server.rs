@@ -143,9 +143,12 @@ async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) 
 async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
     info!("Handling GET request");
     let path = format!("/home/sdfs/{}", get_req.file_name);
-    let Ok(file) = fs::File::open(path).await else {
-        warn!("Unable to open file {}", get_req.file_name);
-        return;
+    let file = match fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) => {
+            warn!("Unable to open file {} with error {}", get_req.file_name, e);
+            return;
+        }
     };
 
     let mut file_buf = Vec::new();
