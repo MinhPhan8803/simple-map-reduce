@@ -354,6 +354,11 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
         local_files.push(local_file);
     }
 
+    if files.is_empty() {
+        warn!("Server map, unable to fetch dataset");
+        return;
+    }
+
     info!("Server map: Fetched files from servers");
     // run the executable and collect keys
     // assume executable output keys to terminal
@@ -362,11 +367,9 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
             .args(
                 [
                     &format!("executors/{}", &map_req.executable),
+                    &files[0],
                     &map_req.output_prefix,
                 ]
-                .into_iter()
-                .chain(files.iter())
-                .collect::<Vec<_>>(),
             )
             .output()
         else {
@@ -440,38 +443,42 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         local_keys.push(local_key);
     }
     info!("Finished fetching files");
+    if files.is_empty() {
+        warn!("Server reduce: No input file found");
+        return
+    }
 
     // run executable and send to target server
-    for file in files {
-        match tokio::task::block_in_place(|| {
-            let mut command = 
-            Command::new("python3");
+    let Some((prefix, _)) = files[0].split_once('_') else {
+        warn!("Server reduce: Malformed input files, unable to get prefix");
+        return;
+    };
 
-            command.args(
-                    [
-                        &format!("executors/{}", &red_req.executable),
-                        &red_req.output_file,
-                        &file
-                    ]
-                    //.into_iter()
-                    //.chain(files.iter())
-                    //.collect::<Vec<_>>(),
-                );
-            info!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
-            
-            command.output()
-        }) {
-            Err(e) => {
-                error!("Unable to run executable: {}", e);
-                return;
+    match tokio::task::block_in_place(|| {
+        let mut command = 
+        Command::new("python3");
+
+        command.args(
+                [
+                    &format!("executors/{}", &red_req.executable),
+                    prefix,
+                    &red_req.output_file,
+                ]
+            );
+        info!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
+        
+        command.output()
+    }) {
+        Err(e) => {
+            error!("Unable to run executable: {}", e);
+            return;
+        }
+        Ok(raw_output) => {
+            if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
+                info!("Server reduce: stderr {}", stderr);
             }
-            Ok(raw_output) => {
-                if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
-                    info!("Server reduce: stderr {}", stderr);
-                }
-            }
-        };
-    }
+        }
+    };
     info!("Finishing running executable");
 
     for local_key in local_keys {
