@@ -14,6 +14,7 @@ def reduce_words(input_files, destination_file):
 
     # Write the result to the destination file
     with open('/home/sdfs/mrout/' + destination_file, 'a') as file:
+        print("??????????")
         file.write(f'{total_count}\n')
 
 if __name__ == "__main__":

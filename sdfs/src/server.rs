@@ -442,33 +442,36 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     info!("Finished fetching files");
 
     // run executable and send to target server
-    match tokio::task::block_in_place(|| {
-        let mut command = 
-        Command::new("python3");
+    for file in files {
+        match tokio::task::block_in_place(|| {
+            let mut command = 
+            Command::new("python3");
 
-        command.args(
-                [
-                    &format!("executors/{}", &red_req.executable),
-                    &red_req.output_file,
-                ]
-                .into_iter()
-                .chain(files.iter())
-                .collect::<Vec<_>>(),
-            );
-        println!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
-        
-        command.output()
-    }) {
-        Err(e) => {
-            error!("Unable to run executable: {}", e);
-            return;
-        }
-        Ok(raw_output) => {
-            if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
-                info!("Server reduce: stderr {}", stderr);
+            command.args(
+                    [
+                        &format!("executors/{}", &red_req.executable),
+                        &red_req.output_file,
+                        &file
+                    ]
+                    //.into_iter()
+                    //.chain(files.iter())
+                    //.collect::<Vec<_>>(),
+                );
+            info!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
+            
+            command.output()
+        }) {
+            Err(e) => {
+                error!("Unable to run executable: {}", e);
+                return;
             }
-        }
-    };
+            Ok(raw_output) => {
+                if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
+                    info!("Server reduce: stderr {}", stderr);
+                }
+            }
+        };
+    }
     info!("Finishing running executable");
 
     for local_key in local_keys {
