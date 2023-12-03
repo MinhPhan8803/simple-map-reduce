@@ -417,10 +417,11 @@ impl Client {
         };
         if let Err(e) = Ack::decode(&res_buffer[..n]) {
             error!("Unable to decode leader ack response: {}", e);
+            println!("Map failed, aborting");
         } else {
             info!("Map successful");
+            println!("Map successful");
         };
-        println!("Map successful");
     }
 
     pub async fn reduce(
@@ -462,9 +463,10 @@ impl Client {
         };
         if let Err(e) = Ack::decode(&res_buffer[..n]) {
             error!("Unable to decode leader ack response: {}", e);
+            println!("Reduce failed, aborting");
         } else {
             info!("Reduce successful");
+            println!("Reduce successful");
         };
-        println!("Reduce successful");
     }
 }

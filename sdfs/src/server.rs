@@ -556,7 +556,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
     };
     info!("Server listening on port 56552");
 
-    let mut buffer = [0; 4096];
+    let mut buffer = [0; 51200];
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
             error!("Unable to accept TCP socket connection");
