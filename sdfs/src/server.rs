@@ -330,11 +330,13 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
     // First, fetch the file from the SDFS server
     let mut files = Vec::new();
+    let mut local_files = Vec::new();
     for (file, servers) in map_req.file_server_map.into_iter() {
+        let local_file = format!("/home/sdfs/mrin/{file}");
         if let Err(e) = client_get_helper(
             servers.servers,
             &file,
-            &file,
+            &local_file,
             Some((map_req.start_line, map_req.end_line)),
         )
         .await
@@ -346,6 +348,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
             continue;
         }
         files.push(file);
+        local_files.push(local_file);
     }
 
     info!("Server map: Fetched files from servers");
@@ -384,6 +387,10 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
         return;
     };
 
+    for local_file in local_files {
+        let _ = fs::remove_file(local_file).await;
+    }
+
     info!("Server map: successfully ran executables");
     // PUT the output files to the target SDFS server
     for key in &keys {
@@ -414,12 +421,15 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     info!("Server reduce: Processing reduce on server");
     // fetch files
     let mut files = Vec::new();
+    let mut local_keys = Vec::new();
     for (key, servers) in red_req.key_server_map.into_iter() {
-        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &key, None).await {
+        let local_key = format!("/home/sdfs/mrin/{key}");
+        if let Err(e) = client_get_helper(servers.servers.clone(), &key, &local_key, None).await {
             error!("Unable to fetch key file: {}", e);
             return;
         }
         files.push(key);
+        local_keys.push(local_key);
     }
     info!("Finished fetching files");
 
@@ -441,6 +451,10 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         return;
     }
     info!("Finishing running executable");
+
+    for local_key in local_keys {
+        let _ = fs::remove_file(local_key).await;
+    }
 
     put_from_server(
         red_req.output_file.clone(),
