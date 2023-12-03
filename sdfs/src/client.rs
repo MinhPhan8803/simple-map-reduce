@@ -386,6 +386,7 @@ impl Client {
         num_workers: u32,
         file_name_prefix: &str,
         input_dir: &str,
+        arguments: &[&str],
     ) {
         let start_time = Instant::now();
         info!("Starting Map on client side");
@@ -404,6 +405,7 @@ impl Client {
                 num_workers,
                 file_name_prefix: file_name_prefix.to_string(),
                 input_dir: input_dir.to_string(),
+                arguments: arguments.iter().map(|arg| arg.to_string()).collect(),
             })),
         }
         .encode_to_vec();
@@ -424,10 +426,7 @@ impl Client {
             println!("Map successful");
         };
         let duration = start_time.elapsed();
-        println!(
-            "Time taken for map: {:?}",
-            duration
-        );
+        println!("Time taken for map: {:?}", duration);
     }
 
     pub async fn reduce(
@@ -476,33 +475,42 @@ impl Client {
             println!("Reduce successful");
         };
         let duration = start_time.elapsed();
-        println!(
-            "Time taken for reduce: {:?}",
-            duration
-        );
+        println!("Time taken for reduce: {:?}", duration);
     }
 
     pub async fn filter(&self, dataset: &str, regex: &str) {
         let start_time = Instant::now();
 
-
+        self.map("selectmap.py", 7, "sqlfilter", dataset, &[regex])
+            .await;
+        self.reduce(
+            "selectreduce.py",
+            7,
+            "sqlfilter",
+            &format!("{dataset}_filter"),
+            true,
+        )
+        .await;
 
         let duration = start_time.elapsed();
-        println!(
-            "Time taken for filter: {:?}",
-            duration
-        );
+        println!("Time taken for filter: {:?}", duration);
     }
 
     pub async fn join(&self, d1: &str, d2: &str, d1_field: &str, d2_field: &str) {
         let start_time = Instant::now();
 
-
+        self.map("joinmap.py", 7, "sqljoin", d1, &[d1_field]).await;
+        self.map("joinmap.py", 7, "sqljoin", d2, &[d2_field]).await;
+        self.reduce(
+            "joinreduce.py",
+            7,
+            "sqljoin",
+            &format!("{d1}_{d2}_join"),
+            true,
+        )
+        .await;
 
         let duration = start_time.elapsed();
-        println!(
-            "Time taken for filter: {:?}",
-            duration
-        );
+        println!("Time taken for filter: {:?}", duration);
     }
 }

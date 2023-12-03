@@ -7,7 +7,7 @@ use crate::message_types::{
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{fmt, process::Command, sync::Arc, io::Write};
+use std::{fmt, io::Write, process::Command, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
@@ -364,13 +364,11 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     // assume executable output keys to terminal
     let Some(keys) = tokio::task::block_in_place(|| {
         let Ok(raw_output) = Command::new("python3")
-            .args(
-                [
-                    &format!("executors/{}", &map_req.executable),
-                    &files[0],
-                    &map_req.output_prefix,
-                ]
-            )
+            .args([
+                &format!("executors/{}", &map_req.executable),
+                &files[0],
+                &map_req.output_prefix,
+            ])
             .output()
         else {
             warn!("Server map: unable to run executable");
@@ -445,7 +443,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     info!("Finished fetching files");
     if files.is_empty() {
         warn!("Server reduce: No input file found");
-        return
+        return;
     }
 
     // run executable and send to target server
@@ -455,18 +453,15 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     };
 
     match tokio::task::block_in_place(|| {
-        let mut command = 
-        Command::new("python3");
+        let mut command = Command::new("python3");
 
-        command.args(
-                [
-                    &format!("executors/{}", &red_req.executable),
-                    prefix,
-                    &red_req.output_file,
-                ]
-            );
+        command.args([
+            &format!("executors/{}", &red_req.executable),
+            prefix,
+            &red_req.output_file,
+        ]);
         info!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
-        
+
         command.output()
     }) {
         Err(e) => {

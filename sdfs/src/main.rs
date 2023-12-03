@@ -235,13 +235,19 @@ async fn command_listener(
                     .multi_write(local_file_name, sdfs_file_name, vms)
                     .await;
             }
-            ["maple", executable_name, num_workers, file_name_prefix, input_dir] => {
+            ["maple", executable_name, num_workers, file_name_prefix, input_dir, arguments @ ..] => {
                 let Ok(num_workers) = num_workers.parse::<u32>() else {
                     println!("Invalid input");
                     continue;
                 };
                 client
-                    .map(executable_name, num_workers, file_name_prefix, input_dir)
+                    .map(
+                        executable_name,
+                        num_workers,
+                        file_name_prefix,
+                        input_dir,
+                        arguments,
+                    )
                     .await;
             }
             ["juice", executable_name, num_workers, file_name_prefix, input_dir, is_delete] => {

@@ -83,6 +83,7 @@ message MapReq {
     uint32 num_workers = 2;
     string file_name_prefix = 3;
     string input_dir = 4;
+    repeated string arguments = 5;
 }
 
 message ReduceReq {
