@@ -7,7 +7,7 @@ use crate::message_types::{
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{fmt, process::Command, sync::Arc};
+use std::{fmt, process::Command, sync::Arc, io::Write};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::{fs, sync::Mutex};
@@ -413,8 +413,8 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
                 .await;
             })
             .await;
-        //let path = format!("/home/sdfs/mrout/{file_name}");
-        //let _ = fs::remove_file(path).await;
+        let path = format!("/home/sdfs/mrout/{file_name}");
+        let _ = fs::remove_file(path).await;
     }
 
     info!("Server map: successfully put files on target servers");
@@ -486,8 +486,8 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
     .await;
     info!("Finished PUT'ing");
 
-    //let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
-    //let _ = fs::remove_file(path).await;
+    let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
+    let _ = fs::remove_file(path).await;
 
     // end request
     let leader_ack_buffer = Ack {
@@ -515,11 +515,10 @@ async fn handle_server_map_reduce(
     write_to_buf(&mut data_buffer, server_stream, None).await;
 
     let path = format!("/home/sdfs/{}", output_file);
-    let Ok(file) = fs::OpenOptions::new()
+    let Ok(file) = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(path)
-        .await
     else {
         warn!("Server M-R receiver: Unable to open file");
         return;
@@ -527,15 +526,16 @@ async fn handle_server_map_reduce(
 
     let mut file_lock = fd_lock::RwLock::new(file);
 
-    let Ok(mut locked_file) = tokio::task::block_in_place(|| file_lock.write()) else {
+    if let Ok(mut locked_file) = tokio::task::block_in_place(|| file_lock.write()) {
+        if let Err(e) = locked_file.write_all(&data_buffer) {
+            error!(
+                "Server M-R receiver: Unable to append to file with error {}",
+                e
+            );
+            return;
+        };
+    } else {
         error!("Server M-R receiver: Unable to acquire a file lock");
-        return;
-    };
-    if let Err(e) = locked_file.write_all(&data_buffer).await {
-        error!(
-            "Server M-R receiver: Unable to append to file with error {}",
-            e
-        );
         return;
     };
     info!("Server wrote map-reduce data successfully");
