@@ -674,6 +674,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
             }
             Err(e) => warn!("Failed to read from socket: {}", e),
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         buffer.fill(0);
     }
 }
