@@ -20,8 +20,9 @@ use chrono::offset::Local;
 use inquire::Text;
 use prost::Message;
 use std::{fs::File, net::IpAddr, str::FromStr, sync::Arc, time::Duration};
-use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::{net::UdpSocket, process::Command, signal::ctrl_c};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, trace_span, Instrument};
 
 #[tokio::main]
@@ -106,6 +107,20 @@ async fn main() {
         let notifier = Arc::new(Notify::new());
         let notified = notifier.clone();
 
+        let cancel_token = CancellationToken::new();
+        let cloned_token = cancel_token.clone();
+        tokio::spawn(async move {
+            match ctrl_c().await {
+                Ok(_) => {
+                    cloned_token.cancel();
+                }
+                Err(err) => {
+                    eprintln!("Unable to listen for shutdown signal: {}", err);
+                    cloned_token.cancel();
+                }
+            };
+        });
+
         let recv = tokio::spawn(async move {
             receiver::receiver(
                 receiver_members,
@@ -140,6 +155,17 @@ async fn main() {
         tokio::select! {
             _ = stop_rx.recv() => {
                 info!("Stopping tasks");
+                let _ = Command::new("find")
+                .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
+                .output()
+                .await;
+            }
+            _ = cancel_token.cancelled() => {
+                info!("Stopping tasks");
+                let _ = Command::new("find")
+                .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
+                .output()
+                .await;
             }
             _ = recv => {
                 error!("Failure detector stopped. This should never happen.");

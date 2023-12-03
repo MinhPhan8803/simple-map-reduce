@@ -7,10 +7,10 @@ use crate::message_types::{
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{fmt, io::Write, process::Command, sync::Arc};
+use std::{fmt, io::Write, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::{fs, sync::Mutex};
+use tokio::{fs, process::Command, sync::Mutex};
 use tracing::{error, info, instrument, warn};
 
 #[derive(Debug, Clone)]
@@ -362,39 +362,34 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     info!("Server map: Fetched files from servers");
     // run the executable and collect keys
     // assume executable output keys to terminal
-    let Some(keys) = tokio::task::block_in_place(|| {
-        let Ok(raw_output) = Command::new("python3")
-            .args(
-                [
-                    &format!("executors/{}", &map_req.executable),
-                    &files[0],
-                    &map_req.output_prefix,
-                ]
-                .into_iter()
-                .chain(&map_req.arguments)
-                .collect::<Vec<_>>(),
-            )
-            .output()
-        else {
-            warn!("Server map: unable to run executable");
-            return None;
-        };
-        let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
-            warn!("Server map: unable to parse keys");
-            return None;
-        };
-        if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
-            info!("Server map: stderr {}", stderr);
-        }
-        Some(
-            output
-                .lines()
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>(),
+    let Ok(raw_output) = Command::new("python3")
+        .args(
+            [
+                &format!("executors/{}", &map_req.executable),
+                &files[0],
+                &map_req.output_prefix,
+            ]
+            .into_iter()
+            .chain(&map_req.arguments)
+            .collect::<Vec<_>>(),
         )
-    }) else {
+        .output()
+        .await
+    else {
+        warn!("Server map: unable to run executable");
         return;
     };
+    let Ok(output) = std::str::from_utf8(&raw_output.stdout) else {
+        warn!("Server map: unable to parse keys");
+        return;
+    };
+    if let Ok(stderr) = std::str::from_utf8(&raw_output.stderr) {
+        info!("Server map: stderr {}", stderr);
+    }
+    let keys = output
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
 
     if keys.is_empty() {
         warn!("No keys output for map");
@@ -457,20 +452,17 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         return;
     };
 
-    match tokio::task::block_in_place(|| {
-        let mut command = Command::new("python3");
-
-        command.args([
+    match Command::new("python3")
+        .args([
             &format!("executors/{}", &red_req.executable),
             prefix,
             &red_req.output_file,
-        ]);
-        info!("Reduce args: {:?}", command.get_args().collect::<Vec<_>>());
-
-        command.output()
-    }) {
+        ])
+        .output()
+        .await
+    {
         Err(e) => {
-            error!("Unable to run executable: {}", e);
+            error!("Unable to run reduce executable: {}", e);
             return;
         }
         Ok(raw_output) => {
