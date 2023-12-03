@@ -107,41 +107,34 @@ impl Client {
             });
         }
 
-        let mut file_buf = String::new();
+        let mut file_buf = Vec::new();
         let mut buf_reader = BufReader::new(file);
 
-        loop {
-            match buf_reader.read_line(&mut file_buf).await {
-                Err(_) => {
-                    file_buf.clear();
-                    continue;
-                }
-                Ok(0) => break,
-                Ok(size) => {
-                    info!("Put read file with size: {size}");
-
-                    let send_buffer_references = stream::repeat(&file_buf);
-
-                    servers_in_prog = stream::iter(servers_in_prog)
-                        .zip(send_buffer_references)
-                        .filter_map(|(mut server, buffer)| async move {
-                            match server.server_stream.write_all(buffer.as_bytes()).await {
-                                Ok(_) => Some(server),
-                                Err(e) => {
-                                    warn!(
-                                        "Unable to write to server {} with error {}, ignoring server",
-                                        server.server_address, e
-                                    );
-                                    None
-                                }
-                            }
-                        })
-                        .collect()
-                        .await;
-
-                    file_buf.clear();
-                }
+        while let Ok(size) = buf_reader.read_until(b'\n', &mut file_buf).await {
+            if size == 0 {
+                break;
             }
+            info!("Put read file with size: {size}");
+
+            let send_buffer_references = stream::repeat(&file_buf);
+
+            servers_in_prog = stream::iter(servers_in_prog)
+                .zip(send_buffer_references)
+                .filter_map(|(mut server, buffer)| async move {
+                    match server.server_stream.write_all(buffer).await {
+                        Ok(_) => Some(server),
+                        Err(e) => {
+                            warn!(
+                                "Unable to write to server {} with error {}, ignoring server",
+                                server.server_address, e
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect()
+                .await;
+            file_buf.clear();
         }
 
         if servers_in_prog.is_empty() {

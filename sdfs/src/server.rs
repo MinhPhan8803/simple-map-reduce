@@ -1,8 +1,9 @@
 use crate::helpers::{client_get_helper, write_to_buf, FileKey};
 use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
-    Ack, Delete, Fail, GetReq, LeaderMapReq, LeaderPutReq, LeaderReduceReq, LeaderStoreRes, LsRes,
-    MultiRead, MultiWrite, PutReq, ServerMapReq, ServerMapRes, ServerReduceReq,
+    Ack, Delete, Fail, FileSizeReq, FileSizeRes, GetReq, LeaderMapReq, LeaderPutReq,
+    LeaderReduceReq, LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq,
+    ServerMapRes, ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
@@ -147,15 +148,15 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
         return;
     };
 
-    let mut file_buf = String::new();
+    let mut file_buf = Vec::new();
     let mut buf_reader = BufReader::new(file);
 
     info!("Server beginning send");
-    while let Ok(size) = buf_reader.read_line(&mut file_buf).await {
+    while let Ok(size) = buf_reader.read_until(b'\n', &mut file_buf).await {
         if size == 0 {
             break;
         }
-        if let Err(e) = stream.write_all(file_buf.as_bytes()).await {
+        if let Err(e) = stream.write_all(&file_buf).await {
             warn!("Unable to write to client {}", e);
         }
         file_buf.clear();
@@ -508,6 +509,29 @@ async fn handle_server_map_reduce(
     }
 }
 
+async fn handle_file_size(mut leader_stream: TcpStream, req: FileSizeReq) {
+    let path = format!("/home/sdfs/{}", req.file_name);
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        warn!("File size: Unable to open file");
+        return;
+    };
+    let mut file_buf = Vec::new();
+    let mut buf_reader = BufReader::new(file);
+
+    let mut line_count = 0;
+    while let Ok(size) = buf_reader.read_until(b'\n', &mut file_buf).await {
+        if size == 0 {
+            break;
+        }
+        line_count += 1;
+        file_buf.clear();
+    }
+
+    let response = FileSizeRes { size: line_count }.encode_to_vec();
+    let _ = leader_stream.write_all(&response).await;
+    let _ = leader_stream.shutdown().await;
+}
+
 #[instrument(name = "Server startup and listener", level = "trace")]
 pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
     let raw_machine_name = hostname::get().unwrap().into_string().unwrap();
@@ -615,6 +639,11 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         tokio::spawn(async move {
                             handle_server_map_reduce(stream, req.output_file, false, file_list)
                                 .await;
+                        });
+                    }
+                    Some(Type::FileSizeReq(req)) => {
+                        tokio::spawn(async move {
+                            handle_file_size(stream, req).await;
                         });
                     }
                     _ => {
