@@ -84,8 +84,16 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
         error!("Failed to contact reduce worker {}", vm);
         return fail;
     };
-
-    let _ = stream.write_all(&message).await;
+    info!(
+        "Leader reduce: sending reduce messge with size {}",
+        message.len()
+    );
+    if let Err(e) = stream.write_all(&message).await {
+        error!(
+            "Leader reduce: failed to send message to server with error {}",
+            e
+        );
+    }
     let mut res = Vec::new();
     if let Err(e) = stream.read_to_end(&mut res).await {
         error!(
@@ -323,47 +331,45 @@ impl FileTable {
         let mut keys = Vec::new();
         loop {
             info!("Leader map: Initiating map at workers");
-            let num_workers = worker_vms.len();
+            let mut num_workers = map_req.num_workers;
+            if num_workers > size {
+                num_workers = size;
+            }
+
             let mut task_handlers = JoinSet::new();
             let mut map_results = Vec::new();
-            if num_workers > size as usize {
-                info!("Leader map: More workers than lines");
-                for (vm, line) in zip(worker_vms.into_iter(), 0..size) {
-                    let file = file_server_map[0].0.clone();
-                    let servers = file_server_map[0].1.clone();
-                    let command = LeaderMapReq {
-                        executable: map_req.executable.clone(),
-                        output_prefix: map_req.file_name_prefix.clone(),
-                        file_server_map: HashMap::from([(file, servers)]),
-                        target_servers: target_vms.clone(),
-                        start_line: line,
-                        end_line: line,
-                    };
-                    task_handlers.spawn(send_leader_map_req(vm, command));
-                }
-            } else {
-                info!("Leader map: Fewer workers than lines");
-                let chunk_size = (size).div_ceil(num_workers as u32);
-                for (vm, chunk) in zip(worker_vms.into_iter(), 0..(num_workers as u32)) {
-                    let file = file_server_map[0].0.clone();
-                    let servers = file_server_map[0].1.clone();
-                    info!(
-                        "Chunk {}: start line {}, end line {}",
-                        chunk,
-                        chunk * chunk_size,
-                        (chunk + 1) * chunk_size - 1
-                    );
-                    let command = LeaderMapReq {
-                        executable: map_req.executable.clone(),
-                        output_prefix: map_req.file_name_prefix.clone(),
-                        file_server_map: HashMap::from([(file, servers)]),
-                        target_servers: target_vms.clone(),
-                        start_line: chunk * chunk_size,
-                        end_line: (chunk + 1) * chunk_size - 1,
-                    };
-                    task_handlers.spawn(send_leader_map_req(vm, command));
+
+            info!("Leader map: sending tasks");
+            let chunk_size = (size).div_ceil(num_workers);
+            let task_permit: Arc<Semaphore> = Arc::new(Semaphore::new(num_workers as usize));
+
+            for (vm, chunk) in zip(worker_vms.into_iter().cycle(), 0..num_workers) {
+                let file = file_server_map[0].0.clone();
+                let servers = file_server_map[0].1.clone();
+                info!(
+                    "Chunk {}: start line {}, end line {}",
+                    chunk,
+                    chunk * chunk_size,
+                    (chunk + 1) * chunk_size - 1
+                );
+                let command = LeaderMapReq {
+                    executable: map_req.executable.clone(),
+                    output_prefix: map_req.file_name_prefix.clone(),
+                    file_server_map: HashMap::from([(file, servers)]),
+                    target_servers: target_vms.clone(),
+                    start_line: chunk * chunk_size,
+                    end_line: (chunk + 1) * chunk_size - 1,
+                };
+                let task_permit_cloned = task_permit.clone();
+                if let Ok(permit) = task_permit_cloned.acquire_owned().await {
+                    task_handlers.spawn(async move {
+                        let res = send_leader_map_req(vm, command).await;
+                        drop(permit);
+                        res
+                    });
                 }
             }
+
             while let Some(join) = task_handlers.join_next().await {
                 if let Ok(res) = join {
                     map_results.push(res);
@@ -489,35 +495,35 @@ impl FileTable {
         // send reduce requests to workers
         loop {
             info!("Leader reduce: sending reduce requests to workers");
-            let worker_vms_num = worker_vms.len();
+            let worker_vms_num = red_req.num_workers as usize;
+
             let mut task_handlers = JoinSet::new();
             let mut reduce_results = Vec::new();
-            if worker_vms.len() > file_server_map.len() {
-                info!("Leader reduce: more workers than files");
-                for (vm, (key, file)) in zip(worker_vms.into_iter(), file_server_map.into_iter()) {
-                    let command = LeaderReduceReq {
-                        key_server_map: HashMap::from([(key, file)]),
-                        target_server: target_vm.to_string(),
-                        output_file: red_req.output_file.clone(),
-                        executable: red_req.executable.clone(),
-                    };
-                    task_handlers.spawn(send_leader_reduce_req(vm, command));
-                }
-            } else {
-                info!("Leader reduce: fewer workers than files");
-                for (vm, key_file_chunk) in zip(
-                    worker_vms.into_iter(),
-                    file_server_map.chunks(file_server_map.len() / worker_vms_num),
-                ) {
-                    let command = LeaderReduceReq {
-                        key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
-                        target_server: target_vm.to_string(),
-                        output_file: red_req.output_file.clone(),
-                        executable: red_req.executable.clone(),
-                    };
-                    task_handlers.spawn(send_leader_reduce_req(vm, command));
+
+            let chunk_size = (file_server_map.len()).div_ceil(worker_vms_num);
+            let task_permit: Arc<Semaphore> = Arc::new(Semaphore::new(worker_vms_num));
+
+            info!("Leader reduce: fewer workers than files");
+            for (vm, key_file_chunk) in zip(
+                worker_vms.into_iter().cycle(),
+                file_server_map.chunks(chunk_size),
+            ) {
+                let command = LeaderReduceReq {
+                    key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
+                    target_server: target_vm.to_string(),
+                    output_file: red_req.output_file.clone(),
+                    executable: red_req.executable.clone(),
+                };
+                let task_permit_cloned = task_permit.clone();
+                if let Ok(permit) = task_permit_cloned.acquire_owned().await {
+                    task_handlers.spawn(async move {
+                        let res = send_leader_reduce_req(vm, command).await;
+                        drop(permit);
+                        res
+                    });
                 }
             }
+
             while let Some(join) = task_handlers.join_next().await {
                 if let Ok(res) = join {
                     reduce_results.push(res);
