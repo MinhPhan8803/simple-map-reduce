@@ -6,14 +6,14 @@ def map_filter(input_file, output_prefix, regex):
     pattern = re.compile(regex)
 
     # Open the input file
-    with open(input_file, 'r') as file:
+    with open("/home/sdfs/mrin/"+input_file, 'r') as file:
         lines = file.readlines()
 
     # Filter lines based on the regular expression
     for line in lines:
         if pattern.search(line):
             # Write the matching line to the output file
-            with open(f'{output_prefix}_filtered', 'a') as out_file:
+            with open(f'/home/sdfs/mrout/{output_prefix}_filtered', 'a') as out_file:
                 out_file.write(line)
 
 if __name__ == "__main__":

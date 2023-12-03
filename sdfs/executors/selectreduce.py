@@ -3,8 +3,8 @@ import os
 
 def reduce_filter(input_prefix, destination_file):
     # Aggregate filtered results from multiple map outputs
-    with open(destination_file, 'w') as dest_file:
-        for filename in os.listdir('.'):
+    with open('/home/sdfs/mrout/'+ destination_file, 'w') as dest_file:
+        for filename in os.listdir('/home/sdfs/mrout'):
             if filename.startswith(input_prefix) and filename.endswith('_filtered'):
                 with open(filename, 'r') as file:
                     dest_file.write(file.read())
