@@ -223,16 +223,12 @@ impl FileTable {
         members: Arc<RwLock<Vec<Node>>>,
     ) {
         info!("Leader map: Processing map on leader");
-        // Step 1: Find files with the prefix map_req.input_dir.concat("|") in the FileTable table
-        let prefix = match map_req.input_dir.as_bytes() {
-            [.., b'|'] => map_req.input_dir,
-            _ => map_req.input_dir + "|",
-        };
-        info!("Leader map: Looking for prefix: {}", prefix);
+        // Step 1: Find files with the prefix map_req.input_dir
+        info!("Leader map: Looking for prefix: {}", map_req.input_dir);
         let mut file_server_map: Vec<_> = self
             .table
             .iter()
-            .filter(|elem| elem.key().starts_with(&prefix))
+            .filter(|elem| elem.key().starts_with(&map_req.input_dir))
             .map(|elem| {
                 (
                     elem.key().clone(),
