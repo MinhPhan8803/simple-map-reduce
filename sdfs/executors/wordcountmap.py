@@ -1,23 +1,22 @@
 import sys
 import re
 
-def map_words(input_files, output_prefix):
+def map_words(input_file, output_prefix):
     # Create a dictionary to count occurrences of each word
     word_count = {}
 
     # Open the input files
-    for input_file in input_files:
-        with open('/home/sdfs/mrin/' + input_file, mode='r', errors='replace') as file:
-            text = file.read()
+    with open('/home/sdfs/mrin/' + input_file, mode='r', errors='replace') as file:
+        text = file.read()
 
-        # Split text into words using regular expression
-        words = re.findall(r'\w+', text.lower())
+    # Split text into words using regular expression
+    words = re.findall(r'\w+', text.lower())
 
-        for word in words:
-            if word in word_count:
-                word_count[word] += 1
-            else:
-                word_count[word] = 1
+    for word in words:
+        if word in word_count:
+            word_count[word] += 1
+        else:
+            word_count[word] = 1
 
     # Create output files for each word
     for word, count in word_count.items():
@@ -32,7 +31,7 @@ if __name__ == "__main__":
         print("Usage: python map.py <output_prefix> [input_files]")
         sys.exit(1)
 
-    output_prefix = sys.argv[1]
-    input_files = sys.argv[2:]
+    input_file = sys.argv[1]
+    output_prefix = sys.argv[2]
 
-    map_words(input_files, output_prefix)
+    map_words(input_file, output_prefix)
