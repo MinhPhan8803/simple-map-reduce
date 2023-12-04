@@ -542,7 +542,7 @@ async fn handle_server_map_reduce(
 
     let mut file_lock = fd_lock::RwLock::new(file);
 
-    tokio::task::block_in_place(|| { if let Ok(mut locked_file) =  file_lock.write() {
+    tokio::task::spawn_blocking(move || { if let Ok(mut locked_file) =  file_lock.write() {
         if let Err(e) = locked_file.write_all(&data_buffer) {
             error!(
                 "Server M-R receiver: Unable to append to file with error {}",

@@ -26,8 +26,9 @@ def map_interconne(input_file, output_prefix, type_x):
 
     # Create output files for each detection
     for detection, count in detection_count.items():
-        with open(f'/home/sdfs/mrout/{output_prefix}_{detection}', 'w') as file:
+        with open(f'/home/sdfs/mrout/{output_prefix}_{detection}', 'a') as file:
             file.write(f'{detection}\t{count}\n')
+            file.flush()
 
     for detection in detection_count.keys():
         print(detection)
