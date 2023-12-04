@@ -155,14 +155,14 @@ async fn main() {
         tokio::select! {
             _ = stop_rx.recv() => {
                 info!("Stopping tasks");
-                let _ = Command::new("find")
+                let _ = Command::new("/usr/bin/find")
                 .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
                 .output()
                 .await;
             }
             _ = cancel_token.cancelled() => {
                 info!("Stopping tasks");
-                match Command::new("find")
+                match Command::new("/usr/bin/find")
                 .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
                 .output()
                 .await {
