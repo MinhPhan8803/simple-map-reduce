@@ -19,9 +19,9 @@ use bytes::Bytes;
 use chrono::offset::Local;
 use inquire::Text;
 use prost::Message;
-use std::{fs::File, net::IpAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{fs::File, net::IpAddr, process::Command, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
-use tokio::{net::UdpSocket, process::Command, signal::ctrl_c};
+use tokio::{net::UdpSocket, signal::ctrl_c};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, trace_span, Instrument};
 
@@ -155,17 +155,12 @@ async fn main() {
         tokio::select! {
             _ = stop_rx.recv() => {
                 info!("Stopping tasks");
-                let _ = Command::new("/usr/bin/find")
-                .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
-                .output()
-                .await;
             }
             _ = cancel_token.cancelled() => {
                 info!("Stopping tasks");
-                match Command::new("/usr/bin/find")
+                match tokio::task::block_in_place(||Command::new("/usr/bin/find")
                 .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
-                .output()
-                .await {
+                .output()) {
                     Err(e) => println!("Failed to clear local storage: {}", e),
                     Ok(output) => println!("{} {}", std::str::from_utf8(&output.stdout).unwrap(), std::str::from_utf8(&output.stderr).unwrap()),
                 };

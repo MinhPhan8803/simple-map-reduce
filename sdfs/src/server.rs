@@ -7,10 +7,10 @@ use crate::message_types::{
 };
 use futures::{stream, StreamExt};
 use prost::Message;
-use std::{fmt, io::Write, sync::Arc};
+use std::{fmt, io::Write, process::Command, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::{fs, process::Command, sync::Mutex};
+use tokio::{fs, sync::Mutex};
 use tracing::{error, info, instrument, warn};
 
 #[derive(Debug, Clone)]
@@ -368,20 +368,20 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     info!("Server map: Fetched files from servers");
     // run the executable and collect keys
     // assume executable output keys to terminal
-    let Ok(raw_output) = Command::new("python3")
-        .args(
-            [
-                &format!("/home/sdfs/{}", &map_req.executable),
-                &files[0],
-                &map_req.output_prefix,
-            ]
-            .into_iter()
-            .chain(&map_req.arguments)
-            .collect::<Vec<_>>(),
-        )
-        .output()
-        .await
-    else {
+    let Ok(raw_output) = tokio::task::block_in_place(|| {
+        Command::new("python3")
+            .args(
+                [
+                    &format!("/home/sdfs/{}", &map_req.executable),
+                    &files[0],
+                    &map_req.output_prefix,
+                ]
+                .into_iter()
+                .chain(&map_req.arguments)
+                .collect::<Vec<_>>(),
+            )
+            .output()
+    }) else {
         warn!("Server map: unable to run executable");
         return;
     };
@@ -461,15 +461,15 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         return;
     };
 
-    match Command::new("python3")
-        .args([
-            &format!("/home/sdfs/{}", &red_req.executable),
-            prefix,
-            &red_req.output_file,
-        ])
-        .output()
-        .await
-    {
+    match tokio::task::block_in_place(|| {
+        Command::new("python3")
+            .args([
+                &format!("/home/sdfs/{}", &red_req.executable),
+                prefix,
+                &red_req.output_file,
+            ])
+            .output()
+    }) {
         Err(e) => {
             error!("Unable to run reduce executable: {}", e);
             return;
