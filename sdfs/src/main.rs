@@ -162,12 +162,13 @@ async fn main() {
             }
             _ = cancel_token.cancelled() => {
                 info!("Stopping tasks");
-                if let Err(e) = Command::new("find")
+                match Command::new("find")
                 .args(["/home/sdfs/", "-mindepth", "1", "-type", "f", "-delete"])
                 .output()
                 .await {
-                    println!("Failed to clear local storage: {}", e);
-                }
+                    Err(e) => println!("Failed to clear local storage: {}", e),
+                    Ok(output) => println!("{} {}", std::str::from_utf8(&output.stdout).unwrap(), std::str::from_utf8(&output.stderr).unwrap()),
+                };
             }
             _ = recv => {
                 error!("Failure detector stopped. This should never happen.");
