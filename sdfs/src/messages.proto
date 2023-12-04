@@ -96,7 +96,7 @@ message ReduceReq {
 
 message LeaderReduceReq {
     map<string, KeyServers> key_server_map = 1;
-    string target_server = 2;
+    repeated string target_servers = 2;
     string output_file = 3;
     string executable = 4;
 }
@@ -117,6 +117,11 @@ message ServerMapReq {
 
 message ServerMapRes {
     repeated string keys = 1;
+    repeated string replicators = 2;
+}
+
+message ServerRedRes {
+    repeated string replicators = 1;
 }
 
 message KeyServers {

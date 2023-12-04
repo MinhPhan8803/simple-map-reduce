@@ -3,7 +3,7 @@ use crate::message_types::{sdfs_command::Type, SdfsCommand};
 use crate::message_types::{
     Ack, Delete, Fail, FileSizeReq, FileSizeRes, GetReq, LeaderMapReq, LeaderPutReq,
     LeaderReduceReq, LeaderStoreRes, LsRes, MultiRead, MultiWrite, PutReq, ServerMapReq,
-    ServerMapRes, ServerReduceReq,
+    ServerMapRes, ServerRedRes, ServerReduceReq,
 };
 use futures::{stream, StreamExt};
 use prost::Message;
@@ -45,7 +45,7 @@ enum ServerPutFlavor {
     Reduce,
 }
 
-async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor) {
+async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor) -> Result<(), ()> {
     let get_req = GetReq {
         file_name: match flavor {
             ServerPutFlavor::Put => file_name.clone(),
@@ -58,7 +58,7 @@ async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor)
     info!("Connecting to the other server from server {}", machine);
     let Ok(mut inter_server_stream) = TcpStream::connect(machine).await else {
         warn!("Unable to connect to the other server");
-        return;
+        return Err(());
     };
     let req_buf = SdfsCommand {
         r#type: match flavor {
@@ -76,14 +76,14 @@ async fn put_from_server(file_name: String, ip: String, flavor: ServerPutFlavor)
     let mut res_buf = [0; 1024];
     let Ok(n) = inter_server_stream.read(&mut res_buf).await else {
         warn!("Failed to read ACK from the other server");
-        return;
+        return Err(());
     };
     if let Err(e) = Ack::decode(&res_buf[..n]) {
         warn!("Unable to decode ACK message: {}", e);
-        return;
+        return Err(());
     }
 
-    handle_get(get_req, inter_server_stream).await;
+    handle_get(get_req, inter_server_stream).await
 }
 
 async fn handle_put(
@@ -123,12 +123,17 @@ async fn handle_put(
 
 async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) {
     info!("Handling leader PUT request at server");
-    put_from_server(
+    if put_from_server(
         leader_put_req.file_name,
         leader_put_req.machine,
         ServerPutFlavor::Put,
     )
-    .await;
+    .await
+    .is_err()
+    {
+        info!("Unable to execute leader put, aborting");
+        return;
+    }
 
     info!("Server handled leader PUT successfully");
     let leader_ack = Ack {
@@ -140,14 +145,14 @@ async fn handle_leader_put(leader_put_req: LeaderPutReq, mut stream: TcpStream) 
 }
 
 #[instrument(name = "Server Get", level = "trace")]
-async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
+async fn handle_get(get_req: GetReq, mut stream: TcpStream) -> Result<(), ()> {
     info!("Handling GET request");
     let path = format!("/home/sdfs/{}", get_req.file_name);
     let file = match fs::File::open(path).await {
         Ok(file) => file,
         Err(e) => {
             warn!("Unable to open file {} with error {}", get_req.file_name, e);
-            return;
+            return Err(());
         }
     };
 
@@ -167,6 +172,7 @@ async fn handle_get(get_req: GetReq, mut stream: TcpStream) {
 
     info!("Server handled GET request successfully");
     let _ = stream.shutdown().await;
+    Ok(())
 }
 
 #[instrument(name = "Server Delete", level = "trace")]
@@ -307,7 +313,7 @@ async fn handle_multi_write(mut client_stream: TcpStream, multi_write_req: Multi
                 return;
             }
 
-            handle_get(get_req, inter_server_stream).await;
+            let _ = handle_get(get_req, inter_server_stream).await;
         })
         .await;
 
@@ -402,17 +408,20 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
     info!("Server map: successfully ran executables");
     // PUT the output files to the target SDFS server
+    let mut replicators: Vec<_> = map_req.target_servers;
     for key in &keys {
         let file_name = FileKey::new(&map_req.output_prefix, key);
-        stream::iter(&map_req.target_servers)
-            .for_each_concurrent(None, |server| async {
-                put_from_server(
-                    file_name.to_string(),
-                    server.to_string(),
-                    ServerPutFlavor::Map,
-                )
-                .await;
+        replicators = stream::iter(replicators)
+            .filter_map(|server| async {
+                if put_from_server(file_name.to_string(), server.clone(), ServerPutFlavor::Map)
+                    .await
+                    .is_err()
+                {
+                    return None;
+                }
+                Some(server)
             })
+            .collect()
             .await;
         let path = format!("/home/sdfs/mrout/{file_name}");
         let _ = fs::remove_file(path).await;
@@ -420,7 +429,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
 
     info!("Server map: successfully put files on target servers");
     // ack the leader
-    let leader_ack_buffer = ServerMapRes { keys }.encode_to_vec();
+    let leader_ack_buffer = ServerMapRes { keys, replicators }.encode_to_vec();
     let _ = leader_stream.write_all(&leader_ack_buffer).await;
     let _ = leader_stream.shutdown().await;
 }
@@ -477,22 +486,30 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
         let _ = fs::remove_file(local_key).await;
     }
 
-    put_from_server(
-        red_req.output_file.clone(),
-        red_req.target_server,
-        ServerPutFlavor::Reduce,
-    )
-    .await;
+    let mut replicators: Vec<_> = red_req.target_servers;
+    replicators = stream::iter(replicators)
+        .filter_map(|server| async {
+            if put_from_server(
+                red_req.output_file.clone(),
+                server.clone(),
+                ServerPutFlavor::Reduce,
+            )
+            .await
+            .is_err()
+            {
+                return None;
+            }
+            Some(server)
+        })
+        .collect()
+        .await;
     info!("Finished PUT'ing");
 
     let path = format!("/home/sdfs/mrout/{}", red_req.output_file);
     let _ = fs::remove_file(path).await;
 
     // end request
-    let leader_ack_buffer = Ack {
-        message: "Worker successfully executed reduce".to_string(),
-    }
-    .encode_to_vec();
+    let leader_ack_buffer = ServerRedRes { replicators }.encode_to_vec();
     let _ = leader_stream.write_all(&leader_ack_buffer).await;
     let _ = leader_stream.shutdown().await;
 }
@@ -615,7 +632,7 @@ pub async fn run_server(local_file_list: Arc<Mutex<LocalFileList>>) {
                         // Better error handling instead of unwrap()
                         // In your server's GetData and PutData handling, construct the file path like this:
                         tokio::spawn(async move {
-                            handle_get(get_req, stream).await;
+                            let _ = handle_get(get_req, stream).await;
                         });
                     }
                     Some(Type::Del(del_req)) => {

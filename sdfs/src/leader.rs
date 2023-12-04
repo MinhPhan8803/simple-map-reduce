@@ -2,14 +2,14 @@ use crate::helpers::FileKey;
 use crate::message_types::sdfs_command::Type;
 use crate::message_types::{
     Ack, Delete, FileSizeReq, FileSizeRes, GetReq, KeyServers, LeaderMapReq, LeaderPutReq,
-    LeaderReduceReq, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand, ServerMapRes,
+    LeaderReduceReq, LsRes, MapReq, PutReq, ReduceReq, SdfsCommand, ServerMapRes, ServerRedRes,
 };
 use crate::node::Node;
 use dashmap::DashMap;
 use prost::Message;
 use rand::seq::{IteratorRandom, SliceRandom};
-use std::collections::{HashMap, VecDeque};
-use std::iter::{once, repeat, zip};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::iter::{repeat, zip};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Instant;
@@ -55,23 +55,27 @@ enum AccessType {
 struct ReduceResult {
     succ_worker: Option<Ipv4Addr>,
     fail_blocks: Vec<(String, KeyServers)>,
+    replicators: Vec<String>,
 }
 
 struct MapResult {
     succ_worker: Option<Ipv4Addr>,
     fail_blocks: Vec<(String, KeyServers)>,
     keys: Vec<String>,
+    replicators: Vec<String>,
 }
 
 async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> ReduceResult {
     info!("Leader reduce: Starting reduce task");
-    let succ = ReduceResult {
+    let mut succ = ReduceResult {
         succ_worker: Some(vm),
         fail_blocks: Vec::new(),
+        replicators: Vec::new(),
     };
     let fail = ReduceResult {
         succ_worker: None,
         fail_blocks: command.key_server_map.clone().into_iter().collect(),
+        replicators: Vec::new(),
     };
     let message = SdfsCommand {
         r#type: Some(Type::LeaderRedReq(command)),
@@ -102,17 +106,18 @@ async fn send_leader_reduce_req(vm: Ipv4Addr, command: LeaderReduceReq) -> Reduc
         );
         return fail;
     }
-    if let Err(e) = Ack::decode(res.as_slice()) {
+    let Ok(res) = ServerRedRes::decode(res.as_slice()) else {
         error!(
-            "Leader reduce: Failed to decode ack from reduce worker {}: {}",
-            vm, e
+            "Leader reduce: Failed to decode ack from reduce worker {}",
+            vm
         );
         return fail;
-    }
+    };
     info!(
         "Leader reduce: Successfully executed reduce at worker {}",
         vm
     );
+    succ.replicators = res.replicators;
     succ
 }
 
@@ -122,11 +127,13 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
         succ_worker: Some(vm),
         fail_blocks: Vec::new(),
         keys: Vec::new(),
+        replicators: Vec::new(),
     };
     let fail = MapResult {
         succ_worker: None,
         fail_blocks: command.file_server_map.clone().into_iter().collect(),
         keys: Vec::new(),
+        replicators: Vec::new(),
     };
     let message = SdfsCommand {
         r#type: Some(Type::LeaderMapReq(command)),
@@ -155,6 +162,7 @@ async fn send_leader_map_req(vm: Ipv4Addr, command: LeaderMapReq) -> MapResult {
     };
     info!("Leader map: Successfully executed map at worker {}", vm);
     succ.keys = res.keys;
+    succ.replicators = res.replicators;
     succ
 }
 
@@ -345,6 +353,7 @@ impl FileTable {
             return;
         };
 
+        let mut succ_target_vms: HashSet<_> = target_vms.iter().cloned().collect();
         // Step 3: Distribute files among workers
         let mut keys = Vec::new();
         loop {
@@ -395,16 +404,22 @@ impl FileTable {
                 }
             }
             info!("Leader map: Joined map tasks");
-            let (succ_workers_iter, fail_keys_blocks_iter): (Vec<_>, Vec<_>) = map_results
-                .into_iter()
-                .map(
-                    |MapResult {
-                         succ_worker,
-                         fail_blocks,
-                         keys,
-                     }| (succ_worker, (fail_blocks, keys)),
-                )
-                .unzip();
+            let (succ_workers_replicators_iter, fail_keys_blocks_iter): (Vec<_>, Vec<_>) =
+                map_results
+                    .into_iter()
+                    .map(
+                        |MapResult {
+                             succ_worker,
+                             fail_blocks,
+                             keys,
+                             replicators,
+                         }| {
+                            ((succ_worker, replicators), (fail_blocks, keys))
+                        },
+                    )
+                    .unzip();
+            let (succ_workers_iter, replicators): (Vec<_>, Vec<_>) =
+                succ_workers_replicators_iter.into_iter().unzip();
             let (fail_blocks_iter, keys_iter): (Vec<_>, Vec<_>) =
                 fail_keys_blocks_iter.into_iter().unzip();
             (worker_vms, file_server_map) = (
@@ -412,6 +427,12 @@ impl FileTable {
                 fail_blocks_iter.into_iter().flatten().collect(),
             );
             keys.extend(keys_iter.into_iter().flatten());
+            for replicator in replicators {
+                if replicator.is_empty() {
+                    continue;
+                }
+                succ_target_vms = &succ_target_vms & &replicator.into_iter().collect();
+            }
             if file_server_map.is_empty() {
                 break;
             }
@@ -428,7 +449,7 @@ impl FileTable {
                 .or_insert(Vec::from([FileKey::new(&map_req.file_name_prefix, &key)]));
             let file_key = FileKey::new(&map_req.file_name_prefix, &key);
             self.table.entry(file_key.to_string()).or_insert(
-                target_vms
+                succ_target_vms
                     .iter()
                     .map(|ip| ip.parse::<Ipv4Addr>().unwrap())
                     .collect(),
@@ -460,7 +481,7 @@ impl FileTable {
         members: Arc<RwLock<Vec<Node>>>,
     ) {
         info!("Leader reduce: starting reduce on leader");
-        // fetch active workers containing executable
+        // fetch active workers containing prefix
         let key_file_map = self.keys.clone();
         key_file_map.retain(|_, v| {
             v.retain(|e| e.starts_with(&red_req.file_name_prefix));
@@ -491,10 +512,10 @@ impl FileTable {
         }
 
         let active_vms = get_active_vms(members.clone()).await;
-        let Some(target_vm) = active_vms.choose(&mut rand::thread_rng()).copied() else {
-            warn!("Unable to pick a target VM");
-            return;
-        };
+        let target_vms: Vec<_> = active_vms
+            .choose_multiple(&mut rand::thread_rng(), 4)
+            .map(|ip| ip.to_string())
+            .collect();
 
         let mut worker_vms = active_vms.clone();
         {
@@ -529,6 +550,7 @@ impl FileTable {
         worker_vms = succ_receivers.into_iter().copied().collect();
         info!("Uploaded executable to workers: {:?}", worker_vms);
 
+        let mut succ_target_vms: HashSet<_> = target_vms.iter().cloned().collect();
         // send reduce requests to workers
         loop {
             info!("Leader reduce: sending reduce requests to workers");
@@ -546,7 +568,7 @@ impl FileTable {
             ) {
                 let command = LeaderReduceReq {
                     key_server_map: HashMap::from_iter(key_file_chunk.to_vec()),
-                    target_server: target_vm.to_string(),
+                    target_servers: target_vms.clone(),
                     output_file: red_req.output_file.clone(),
                     executable: red_req.executable.clone(),
                 };
@@ -565,61 +587,39 @@ impl FileTable {
                     reduce_results.push(res);
                 }
             }
-            let (succ_workers_iter, fail_blocks_iter): (Vec<_>, Vec<_>) = reduce_results
+            let (succ_fail_iter, replicators): (Vec<_>, Vec<_>) = reduce_results
                 .into_iter()
                 .map(
                     |ReduceResult {
                          succ_worker,
                          fail_blocks,
-                     }| (succ_worker, fail_blocks),
+                         replicators,
+                     }| ((succ_worker, fail_blocks), replicators),
                 )
                 .unzip();
+            let (succ_workers_iter, fail_blocks_iter): (Vec<_>, Vec<_>) =
+                succ_fail_iter.into_iter().unzip();
             (worker_vms, file_server_map) = (
                 succ_workers_iter.into_iter().flatten().collect(),
                 fail_blocks_iter.into_iter().flatten().collect(),
             );
+            for replicator in replicators {
+                if replicator.is_empty() {
+                    continue;
+                }
+                succ_target_vms = &succ_target_vms & &replicator.into_iter().collect();
+            }
             if file_server_map.is_empty() {
                 break;
             }
         }
         info!("Leader reduce: sent reduce requests");
 
-        // request end server replicate at 3 more server
-        let mut succ_receivers = Vec::new();
-        let mut fail_receivers = Vec::new();
-        let mut missing = 3;
-        loop {
-            let rep_servers: Vec<_> = active_vms
-                .iter()
-                .filter(|s| !succ_receivers.contains(s))
-                .choose_multiple(&mut rand::thread_rng(), missing);
-            for vm in rep_servers {
-                let command = LeaderPutReq {
-                    machine: vm.to_string(),
-                    file_name: red_req.output_file.clone(),
-                };
-                send_leader_put_req(
-                    &target_vm,
-                    command,
-                    &mut fail_receivers,
-                    vm,
-                    &mut succ_receivers,
-                )
-                .await;
-            }
-            if fail_receivers.is_empty() {
-                break;
-            }
-            missing = fail_receivers.len();
-            fail_receivers.clear();
-        }
-
-        info!("Leader reduce: replicated output file");
-
         self.table.insert(
             red_req.output_file,
-            once(target_vm)
-                .chain(succ_receivers.into_iter().copied())
+            succ_target_vms
+                .into_iter()
+                .map(|ip| ip.parse::<Ipv4Addr>().unwrap())
                 .collect::<Vec<_>>(),
         );
 
