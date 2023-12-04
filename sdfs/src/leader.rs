@@ -337,6 +337,7 @@ impl FileTable {
             .await;
             if res.is_some() {
                 file_size = res;
+                break;
             }
         }
 
