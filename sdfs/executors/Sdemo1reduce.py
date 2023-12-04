@@ -29,6 +29,7 @@ def reduce_detections(input_prefix, destination_file):
         for detection, count in detection_count.items():
             percent = (count / total_count) * 100
             dest_file.write(f'{detection}\t{percent:.2f}%\n')
+        dest_file.flush()
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

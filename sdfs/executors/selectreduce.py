@@ -13,6 +13,7 @@ def reduce_filter(input_prefix, destination_file):
                 else:
                     with file:
                         dest_file.write(file.read())
+        dest_file.flush()
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
