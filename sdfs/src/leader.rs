@@ -297,7 +297,7 @@ impl FileTable {
             send_leader_put_req(&ip, command, &mut fail_receivers, vm, &mut succ_receivers).await;
         }
         worker_vms = succ_receivers.into_iter().copied().collect();
-        info!("Uploaded executable to workers");
+        info!("Uploaded executable to workers: {:?}", worker_vms);
 
         // get file count
         let message = SdfsCommand {
@@ -526,7 +526,7 @@ impl FileTable {
             send_leader_put_req(&ip, command, &mut fail_receivers, vm, &mut succ_receivers).await;
         }
         worker_vms = succ_receivers.into_iter().copied().collect();
-        info!("Uploaded executable to workers");
+        info!("Uploaded executable to workers: {:?}", worker_vms);
 
         // send reduce requests to workers
         loop {
