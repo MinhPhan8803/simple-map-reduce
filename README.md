@@ -124,3 +124,4 @@ The following example uploads 2 datasets to the filesystem, then performs a join
     put trucks.csv trucks.csv
     SELECT ALL FROM cars trucks WHERE cars.price = trucks.price
 ```
+The output filename will be `cars_trucks_join`
