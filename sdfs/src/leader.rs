@@ -10,7 +10,7 @@ use prost::Message;
 use rand::seq::{IteratorRandom, SliceRandom};
 use std::collections::{HashMap, VecDeque};
 use std::iter::{once, repeat, zip};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -278,6 +278,27 @@ impl FileTable {
 
         info!("Leader map: Found active workers: {:?}", worker_vms);
 
+        // have the peer upload executable to workers
+        let Ok(peer_addr) = socket.peer_addr() else {
+            warn!("Unable to get peer address info, aborting");
+            return;
+        };
+        let ip = match peer_addr.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => ip.to_ipv4().unwrap(),
+        };
+        let mut succ_receivers = Vec::new();
+        let mut fail_receivers = Vec::new();
+        for vm in &worker_vms {
+            let command = LeaderPutReq {
+                machine: vm.to_string(),
+                file_name: map_req.executable.clone(),
+            };
+            send_leader_put_req(&ip, command, &mut fail_receivers, vm, &mut succ_receivers).await;
+        }
+        worker_vms = succ_receivers.into_iter().copied().collect();
+        info!("Uploaded executable to workers");
+
         // get file count
         let message = SdfsCommand {
             r#type: Some(Type::FileSizeReq(FileSizeReq {
@@ -484,10 +505,28 @@ impl FileTable {
             worker_vms.truncate(red_req.num_workers as usize);
         }
 
-        info!(
-            "Leader reduce: found servers with executables: {:?}",
-            worker_vms
-        );
+        info!("Leader reduce: found active servers: {:?}", worker_vms);
+
+        // have the peer upload executable to workers
+        let Ok(peer_addr) = socket.peer_addr() else {
+            warn!("Unable to get peer address info, aborting");
+            return;
+        };
+        let ip = match peer_addr.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => ip.to_ipv4().unwrap(),
+        };
+        let mut succ_receivers = Vec::new();
+        let mut fail_receivers = Vec::new();
+        for vm in &worker_vms {
+            let command = LeaderPutReq {
+                machine: vm.to_string(),
+                file_name: red_req.executable.clone(),
+            };
+            send_leader_put_req(&ip, command, &mut fail_receivers, vm, &mut succ_receivers).await;
+        }
+        worker_vms = succ_receivers.into_iter().copied().collect();
+        info!("Uploaded executable to workers");
 
         // send reduce requests to workers
         loop {
