@@ -6,7 +6,7 @@ use crate::message_types::{
 };
 use futures::stream::{self, StreamExt};
 use prost::Message;
-use std::{sync::Arc, time::Instant};
+use std::{path::Path, sync::Arc, time::Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::{fs, net::TcpStream, sync::RwLock};
 use tracing::{error, info, instrument, warn};
@@ -390,6 +390,18 @@ impl Client {
     ) {
         let start_time = Instant::now();
         info!("Starting Map on client side");
+        let Some(file_name) = Path::new(executable_name)
+            .file_name()
+            .and_then(|f| f.to_str())
+        else {
+            println!("Malformed executable name, aborting");
+            return;
+        };
+        if let Err(e) = fs::copy(executable_name, format!("/home/sdfs/{}", file_name)).await {
+            println!("Unable to copy executable with error: {}, aborting", e);
+            return;
+        }
+
         let leader_address = {
             let locked = self.leader_ip.read().await;
             locked.clone() + ":56553"
@@ -401,7 +413,7 @@ impl Client {
 
         let map_req_buffer = SdfsCommand {
             r#type: Some(Type::MapReq(MapReq {
-                executable: executable_name.to_string(),
+                executable: file_name.to_string(),
                 num_workers,
                 file_name_prefix: file_name_prefix.to_string(),
                 input_dir: input_dir.to_string(),
@@ -439,6 +451,18 @@ impl Client {
     ) {
         let start_time = Instant::now();
         info!("Starting Reduce on client side");
+        let Some(file_name) = Path::new(executable_name)
+            .file_name()
+            .and_then(|f| f.to_str())
+        else {
+            println!("Malformed executable name, aborting");
+            return;
+        };
+        if let Err(e) = fs::copy(executable_name, format!("/home/sdfs/{}", file_name)).await {
+            println!("Unable to copy executable with error: {}, aborting", e);
+            return;
+        }
+
         let leader_address = {
             let locked = self.leader_ip.read().await;
             locked.clone() + ":56553"
@@ -450,7 +474,7 @@ impl Client {
 
         let reduce_req_buffer = SdfsCommand {
             r#type: Some(Type::RedReq(ReduceReq {
-                executable: executable_name.to_string(),
+                executable: file_name.to_string(),
                 num_workers,
                 file_name_prefix: file_name_prefix.to_string(),
                 output_file: input_dir.to_string(),
@@ -481,10 +505,10 @@ impl Client {
     pub async fn filter(&self, dataset: &str, regex: &str) {
         let start_time = Instant::now();
 
-        self.map("selectmap.py", 7, "sqlfilter", dataset, &[regex])
+        self.map("executors/selectmap.py", 7, "sqlfilter", dataset, &[regex])
             .await;
         self.reduce(
-            "selectreduce.py",
+            "executors/selectreduce.py",
             7,
             "sqlfilter",
             &format!("{dataset}_filter"),
@@ -499,10 +523,12 @@ impl Client {
     pub async fn join(&self, d1: &str, d2: &str, d1_field: &str, d2_field: &str) {
         let start_time = Instant::now();
 
-        self.map("joinmap.py", 7, "sqljoin", d1, &[d1_field]).await;
-        self.map("joinmap.py", 7, "sqljoin", d2, &[d2_field]).await;
+        self.map("executors/joinmap.py", 7, "sqljoin", d1, &[d1_field])
+            .await;
+        self.map("executors/joinmap.py", 7, "sqljoin", d2, &[d2_field])
+            .await;
         self.reduce(
-            "joinreduce.py",
+            "executors/joinreduce.py",
             7,
             "sqljoin",
             &format!("{d1}_{d2}_join"),

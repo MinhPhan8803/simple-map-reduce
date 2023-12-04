@@ -365,7 +365,7 @@ async fn handle_map(mut leader_stream: TcpStream, map_req: LeaderMapReq) {
     let Ok(raw_output) = Command::new("python3")
         .args(
             [
-                &format!("executors/{}", &map_req.executable),
+                &format!("/home/sdfs/{}", &map_req.executable),
                 &files[0],
                 &map_req.output_prefix,
             ]
@@ -454,7 +454,7 @@ async fn handle_reduce(mut leader_stream: TcpStream, red_req: LeaderReduceReq) {
 
     match Command::new("python3")
         .args([
-            &format!("executors/{}", &red_req.executable),
+            &format!("/home/sdfs/{}", &red_req.executable),
             prefix,
             &red_req.output_file,
         ])
